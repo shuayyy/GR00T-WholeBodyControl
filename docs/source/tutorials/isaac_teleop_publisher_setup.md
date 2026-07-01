@@ -106,36 +106,51 @@ Watch the streamer logs for `Isaac Teleop session initialized.` — that means C
 
 For controls and calibration, see [VR Whole-Body Teleop](vr_wholebody_teleop.md#pico-controls).
 
-## Step 6: Start Camera Streaming
+## Step 6: Start Camera Visualization
 
-Stream cameras to the headset via upstream IsaacTeleop's `camera_streamer.sh`. If you don't have the IsaacTeleop repo yet, clone it first:
+Stream cameras to the headset via upstream IsaacTeleop's `camera_viz.sh`. If you don't have the IsaacTeleop repo yet, clone it first:
 
 ```bash
 git clone --recurse-submodules https://github.com/NVIDIA/IsaacTeleop.git
 ```
 
-Then build and launch the camera streamer:
+Then create the environment for the camera visualization streamer:
 
 ```bash
-cd IsaacTeleop
-cd examples/camera_streamer
-
-./camera_streamer.sh build
-./camera_streamer.sh list-cameras
+  cd IsaacTeleop
+  examples/camera_viz/camera_viz.sh setup
+  source examples/camera_viz/.venv/bin/activate
+```
+### Optional: Camera Preview in a Window
+If you have video preview available such as on Thor or desktop simulation, it might be best to test your camera first with the "window" mode:
+```bash
+   ./camera_viz.sh run configs/YOUR_CAMERA.yaml --mode window
 ```
 
-Run with local cameras streaming to the XR headset:
+Choosing the correct yaml configuration camera for your setup is critical. The v4l2.yaml configuration is default but other configs are available:
+```bash
+   ./camera_viz.sh run configs/v4l2.yaml --mode window
+   ./camera_viz.sh run configs/v4l2-realsense.yaml --mode window
+   ./camera_viz.sh run configs/oakd.yaml --mode window
+   ./camera_viz.sh run configs/zed.yaml --mode window
+```
+If you do not see correct output for your camera, you may need to modify the closest yaml file to your setup or create your own in the configs folder. Consider the following:
+- Having more than one camera connected will modify what channel the video should be served from.
+- First, try the command "lsusb" to see if your camera is connected.
+- Next, use "ls -1 /dev/video* to list all video device modes.
+- If you are using a v4l2 setup these cammands will help to debug what is possible:
+  - To see the association of channels to cameras: "v4l2-ctl --list-devices"
+  - For each node, see what it captures and in what pixel formats: "v4l2-ctl --device=/dev/video0 --list-formats"
+  - To see full details on formats and available resolutions:  "v4l2-ctl --device=/dev/video0 --list-formats-ext"
+Once you have this information, make sure the settings in your yaml config match.
+
+### Final Camera Streaming Command
+
+Once you are certain you have valid yaml configured, shut down any preview windows and run instead with "--mode xr", which will stream frames to Isaac Teleop:
 
 ```bash
-source scripts/setup_cloudxr_env.sh
-./camera_streamer.sh run --source local --mode xr
-
-# Optionally specify a camera configuration:
-#   --config config/single_camera.yaml
-#   --config config/multi_camera.yaml
+   ./camera_viz.sh run configs/YOUR_CAMERA.yaml --mode xr
 ```
-
-The `--input-source isaac-teleop` flag also works with [Data Collection](data_collection.md).
 
 ## Troubleshooting
 
