@@ -104,7 +104,7 @@ python gear_sonic/scripts/pico_manager_thread_server.py --manager \
 
 Watch the streamer logs for `Isaac Teleop session initialized.` — that means CloudXR + DeviceIO are both up. The streamer then prints `Manager controls: A+X=toggle mode, A+B+X+Y=start/stop policy` once the headset is connected and body data starts flowing.
 
-For controls and calibration, see [VR Whole-Body Teleop](#pico-controls).
+For controls and calibration, see [VR Whole-Body Teleop](vr_wholebody_teleop.md#pico-controls).
 
 ## Step 6: Start Camera Visualization
 
