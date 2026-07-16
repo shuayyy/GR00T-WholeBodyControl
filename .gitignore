@@ -207,6 +207,8 @@ teleop_vids/
 *.code-workspace
 # Motion/training data (large local datasets, not tracked in git)
 data/
+!planner_wbc/data/
+!planner_wbc/data/**
 bones_seed_smpl/
 sonic_release/
 # Training output logs
