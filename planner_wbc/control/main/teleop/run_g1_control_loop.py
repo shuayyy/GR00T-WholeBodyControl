@@ -32,6 +32,7 @@ from planner_wbc.control.utils.ros_utils import (
     ROSServiceServer,
 )
 from planner_wbc.control.utils.telemetry import Telemetry
+from planner_wbc.control.visualization.stability_visualizer import G1StabilityVisualizer
 
 CONTROL_NODE_NAME = "ControlPolicy"
 
@@ -67,6 +68,10 @@ def main(config: ControlLoopConfig):
 
     wbc_policy = get_wbc_policy("g1", robot_model, wbc_config, config.upper_body_joint_speed)
 
+    stability_visualizer = None
+    if env.sim:
+        stability_visualizer = G1StabilityVisualizer(robot_model, env.sim.sim_env)
+
     keyboard_listener_pub = KeyboardListenerPublisher()
     keyboard_estop = KeyboardEStop()
     if config.keyboard_dispatcher_type == "raw":
@@ -85,7 +90,6 @@ def main(config: ControlLoopConfig):
 
     rate = node.create_rate(config.control_frequency)
 
-    # Subscribes to CONTROL_GOAL_TOPIC, here it is replaced with predefined trajectories.
     upper_body_policy_subscriber = ROSMsgSubscriber(CONTROL_GOAL_TOPIC)
 
     last_teleop_cmd = None
@@ -100,26 +104,21 @@ def main(config: ControlLoopConfig):
 
                 # Measure observation time
                 with telemetry.timer("observe"):
-                    # Read the latest robot/simulation observation for this control step.
                     obs = env.observe()
                     wbc_policy.set_observation(obs)
 
                 # Measure policy setup time
                 with telemetry.timer("policy_setup"):
-                    # Pull the newest upper-body joint/pose target message from teleop.
                     upper_body_cmd = upper_body_policy_subscriber.get_msg()
 
                     t_now = time.monotonic()
 
-                    # `wbc_goal` is the desired target/state request fed into the policy,
-                    # while `wbc_action` below is the full-body command produced by the policy.
                     wbc_goal = {}
                     if upper_body_cmd:
                         wbc_goal = upper_body_cmd.copy()
                         last_teleop_cmd = upper_body_cmd.copy()
                         if config.ik_indicator:
                             env.set_ik_indicator(upper_body_cmd)
-                    # Store/schedule the latest teleop target inside the policy.
                     if wbc_goal:
                         wbc_goal["interpolation_garbage_collection_time"] = t_now - 2 * (
                             1 / config.control_frequency
@@ -128,12 +127,10 @@ def main(config: ControlLoopConfig):
 
                 # Measure policy action calculation time
                 with telemetry.timer("policy_action"):
-                    # Build the next full-body joint command from the current observation and goal.
                     wbc_action = wbc_policy.get_action(time=t_now)
 
                 # Measure action queue time
                 with telemetry.timer("queue_action"):
-                    # Send the commanded action to the simulator/robot execution queue.
                     env.queue_action(wbc_action)
 
                 # Publish status information for InteractiveModeController
@@ -160,6 +157,18 @@ def main(config: ControlLoopConfig):
                         "timestamp": t_now,
                     }
                     joint_safety_status_pub.publish(joint_safety_status_msg)
+
+                # Visualize stability only after simulation release and policy activation.
+                if stability_visualizer is not None:
+                    elastic_band = getattr(env.sim.sim_env, "elastic_band", None)
+                    robot_released = bool(
+                        elastic_band is not None and not elastic_band.enable
+                    )
+                    stability_visualizer.update(
+                        q=obs["q"],
+                        floating_base_pose=obs["floating_base_pose"],
+                        enabled=robot_released and policy_use_action,
+                    )
 
                 # Start or Stop data collection
                 if wbc_goal.get("toggle_data_collection", False):
