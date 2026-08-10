@@ -1,0 +1,15 @@
+Metadata for: AORRTC
+==============================
+
+Body part indexes:
+[ 0 4 10 18 5 11 19 9 16 22 28 17 23 29]
+
+Total timesteps: 117
+
+Data arrays summary:
+  joint_pos: (117, 29) (float32)
+  joint_vel: (117, 29) (float32)
+  body_pos_w: (117, 14, 3) (float32)
+  body_quat_w: (117, 14, 4) (float32)
+  body_lin_vel_w: (117, 14, 3) (float32)
+  body_ang_vel_w: (117, 14, 3) (float32)

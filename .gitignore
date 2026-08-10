@@ -229,7 +229,9 @@ sonic_release/
 # Generated FoundationPose camera captures and results
 pose_estimation/g1_head/
 
-# Local GEAR-SONIC planner development copy
-gear_sonic_planner/
 decoupled_wbc/control/main/planner/SIMILARITY_PLANNER.md
 decoupled_wbc/control/main/planner/run_reference_endpoint_test.sh
+
+# Claude Code local settings
+.claude
+CLAUDE.md
