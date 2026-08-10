@@ -86,16 +86,37 @@ bookkeeping.
 No optimization objective — this is start-to-goal planning only, no similarity
 cost.
 
-Two workarounds for defects in the local OMPL 2.0.0 build, both documented in the
-file:
+Workarounds for two defects in the local OMPL 2.0.0 build, both documented in
+the file:
 
 1. `ProjectingStateSampler` — the build's sampler returns raw ambient samples
-   instead of projecting them onto the manifold. Without this, tree extensions
-   always abort and planners produce nothing.
-2. Degenerate-path recovery — the build corrupts constrained solution paths on
-   readout (all stored states collapse to the goal; `path.length()` reports 0 for
-   a solved problem). When that happens and the direct motion is verifiably
-   valid, the geodesic is rebuilt from the space's own `interpolate()`.
+   instead of projecting them onto the manifold. Naive projection doesn't fix
+   it either: a projected uniform 35-D sample virtually never respects the
+   joint limits, and off-manifold or out-of-bounds targets make every tree
+   extension collapse onto its own tree node (measured 6–12 vertices in 240 s,
+   trees effectively never grow). The sampler therefore perturbs *anchors* —
+   known-feasible configurations (reference posture, current start/goal) —
+   projects, and accepts only in-bounds results. Acceptance ~83 %, and solve
+   times went from tens of seconds (or never) to well under a second.
+2. Corrupted-path rejection — **AORRTC bug** (`AOXRRTConnect.cpp` L360-373 in
+   the build's source): its first iteration primes a straight-line connect
+   while the bookkeeping still points at the goal tree's root, so when the
+   direct start→goal connect succeeds the returned path is built from the
+   goal tree only — `[goal, goal]`, length 0, start never appears. Such a
+   path carries no route information, so `plan()` raises `RuntimeError`
+   naming the planner and the symptom. There is no geodesic fallback;
+   `degenerate_path_recovered` in `last_plan_stats` is kept for downstream
+   readers but is always `False` when `plan()` returns.
+
+Prefer RRTConnect (the default). AORRTC hits bug 2 on every trivially
+connectable problem, and its `getPlannerData()` is wiped by its own anytime
+reset, so `planner_vertices` in `last_plan_stats` only means something for
+single-shot planners.
+
+`last_plan_stats` also records `planner_vertices` / `planner_edges` — on a
+problem whose direct geodesic is invalid, real search shows as vertices > 2,
+`degenerate_path_recovered=False`, and run-to-run varying path lengths
+(verified: 5/5 runs, 13–22 vertices, lengths 3.228–3.318).
 
 Collision checking is still disabled, carried over from `ompl_planning.py` with
 its original comment. Re-enable before hardware.
@@ -103,19 +124,23 @@ its original comment. Re-enable before hardware.
 ### New data directories
 
 - `planner/goal/` — `start.npz`, `goal.npz`, `original_start.npz`,
-  `original_goal.npz` (frames 0 and 122, standing -> deep squat).
-- `planner/test_traj/` — planned trajectories, one file per planner.
+  `original_goal.npz` (frames 0 and 122, standing -> deep squat);
+  `yaw_start.npz`, `yaw_goal.npz` (engineered CoM-valley pair: arms forward,
+  waist yaw +1.6 -> -1.6 — the direct geodesic is unstable at
+  `com_margin=0.038` while both endpoints are fine, so it actually requires
+  search; the only pair here that does, since collision is off).
+- `planner/test_traj/` — planned trajectories per problem
+  (`original/`, `grasp/`, `yaw_swap/`), `npz/` plus deploy-ready `csv/`.
+  See `test_traj/commands.md`.
 
-## RRTConnect settings
+## Planner settings
 
-RRTConnect needs `extend_range=0.5, projection_lambda=10.0`. With OMPL's
-auto-range (~4.8 rad) every extension is one huge constrained geodesic, the
-detour blows past the lambda limit, the extension is discarded, and the tree
-never grows — 1-in-5 success, and more time doesn't help.
-
-With those two arguments: 20/20 successful runs, 5-60 s each.
-
-AORRTC and RRTstar work on defaults (~4 s and ~300 s respectively).
+Defaults are `RRTConnect` with `extend_range=0.5, projection_lambda=10.0`;
+both dataset problems and the yaw-swap problem solve in under a second per
+plan. With the fixed sampler, OMPL auto-range also works — the small range is
+kept as the deliberate default. The old note that RRTConnect needed 5-60 s
+per run predates the sampler fix and is obsolete. AORRTC raises
+`RuntimeError` on trivially connectable pairs (bug 2 above).
 
 ## Known data issue
 

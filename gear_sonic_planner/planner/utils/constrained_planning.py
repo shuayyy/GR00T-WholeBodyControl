@@ -65,29 +65,52 @@ class FeetManifoldConstraint(ob.Constraint):
 
 
 class ProjectingStateSampler(ob.StateSampler):
-    """Ambient-uniform sampler that projects onto the feet manifold.
+    """Anchored manifold sampler for the ambient space.
 
-    Workaround for this OMPL build: stock ``ProjectedStateSpace`` samplers
-    project every sample onto the constraint manifold
-    (``ProjectedStateSampler`` wraps the ambient sampler with
-    ``constraint->project``), but the build's sampler returns raw ambient
-    samples (measured feet errors of 2-5 on samples that should satisfy
-    1e-3).  Off-manifold sample targets make every tree extension's
-    discrete geodesic abort at the first step, so planners create no
-    states at all.  Installing this sampler on the AMBIENT space restores
-    the stock semantics: uniform in bounds, then projected.
+    Replaces this build's ``ProjectedStateSpace`` sampler, which returns
+    raw ambient samples (measured feet errors of 2-5 on samples that
+    should satisfy 1e-3).  Sample targets must be ON the manifold and IN
+    bounds for constrained tree search to work here: extensions toward an
+    off-manifold or out-of-bounds target make the projected geodesic
+    collapse onto the tree node and the extension is discarded, so trees
+    only grow through tree-to-tree connects (measured: 6-12 vertices in
+    240 s, unsolvable non-trivial problems).
 
-    This is NOT a reference-biased sampler -- no trajectory data is
-    involved; it reimplements the neutral upstream behavior.
+    Uniform-ambient projection cannot produce such targets: Newton
+    projection of a uniform 35-D sample succeeds only ~15% of the time
+    and the result virtually never respects the joint limits (measured
+    0/30 in bounds; clipping it back destroys the projection, feet error
+    ~3).  So samples are instead drawn around ANCHORS -- known-feasible
+    manifold configurations (the reference posture plus the current
+    start/goal, maintained by the planner in the shared ``anchors``
+    list) -- perturbed with a per-sample radius, projected, and accepted
+    only when in bounds (measured acceptance at radius 0.4: 50/60).  A
+    residual uniform-ambient fraction keeps global coverage; when
+    everything fails, the projected-then-clipped ambient sample of the
+    stock upstream semantics is the fallback.
+
+    The anchors are single feasible configurations, NOT trajectory data
+    -- this does not bias the search along any reference motion.
     """
 
-    def __init__(self, space, constraint, lower, upper, seed=None):
+    #: fraction of draws perturbing an anchor (rest are uniform-ambient)
+    ANCHOR_FRACTION = 0.8
+    #: per-sample perturbation radius range around an anchor [rad | m]
+    ANCHOR_RADIUS = (0.2, 1.0)
+    #: attempts at an on-manifold in-bounds sample before falling back
+    ACCEPT_ATTEMPTS = 20
+
+    def __init__(self, space, constraint, lower, upper, anchors=None, seed=None):
         super().__init__(space)
         self.constraint = constraint
         self.lower = np.asarray(lower, dtype=float)
         self.upper = np.asarray(upper, dtype=float)
         self.n_dof = self.lower.shape[0]
+        self.anchors = anchors if anchors is not None else []
         self.rng = np.random.default_rng(seed)
+
+    def _in_bounds(self, x):
+        return bool(np.all(x >= self.lower) and np.all(x <= self.upper))
 
     def _write(self, state, x):
         # Planner-side states arrive as the constrained wrapper type
@@ -100,6 +123,22 @@ class ProjectingStateSampler(ob.StateSampler):
                 state[i] = float(x[i])
 
     def sampleUniform(self, state):
+        for _ in range(self.ACCEPT_ATTEMPTS):
+            if self.anchors and self.rng.random() < self.ANCHOR_FRACTION:
+                anchor = self.anchors[self.rng.integers(len(self.anchors))]
+                radius = self.rng.uniform(*self.ANCHOR_RADIUS)
+                x = np.clip(
+                    anchor + self.rng.uniform(-radius, radius, self.n_dof),
+                    self.lower,
+                    self.upper,
+                )
+            else:
+                x = self.rng.uniform(self.lower, self.upper)
+            if self.constraint.project(x) and self._in_bounds(x):
+                self._write(state, x)
+                return
+        # Fallback: stock upstream semantics (project, then enforce
+        # bounds), off-manifold but usable as a Voronoi-bias target.
         x = self.rng.uniform(self.lower, self.upper)
         for _ in range(100):
             if self.constraint.project(x):
@@ -134,14 +173,26 @@ class ConstrainedOMPLPlanner:
     No optimization objective is set: this is pure constrained motion
     planning, start -> goal.
 
-    Two workarounds for defects in this OMPL build are active and loudly
-    documented: ProjectingStateSampler (see its docstring) and the
-    degenerate-solution-path recovery in plan() -- the build corrupts
-    constrained solution paths on readout (every stored state collapses to
-    the goal; C++ path.length() itself reports 0 for a solved 1.3-rad
-    problem), so a zero-length "exact" path between distinct endpoints is
-    re-materialized from the space's own geodesic when, and only when, the
-    direct motion is verifiably valid.
+    Two defects in this OMPL build are handled and loudly documented:
+    ProjectingStateSampler (see its docstring) works around the build's
+    non-projecting sampler, and plan() REJECTS corrupted solution paths.
+    The corruption is an AORRTC bug, located in the build's source:
+    AOXRRTConnect::solve primes its first iteration with a straight-line
+    connect (AOXRRTConnect.cpp L369-372) while ``tgi.xmotion`` still
+    points at the goal tree's root motion, so when the direct start->goal
+    connect succeeds the "solution" is assembled entirely from the goal
+    tree -- [goal, goal], length 0, the start state never appears.  It
+    fires exactly when the problem is solvable by one direct connect.
+    Such a path carries no route information, so plan() raises
+    RuntimeError instead of returning anything; use RRTConnect (the
+    default) or RRTstar, which do not trigger it.
+
+    A second AORRTC quirk to know when reading last_plan_stats: AORRTC
+    resets its inner planner (freeing both trees) every time it finds a
+    solution, and getPlannerData() reads the inner planner -- so
+    ``planner_vertices`` may legitimately report the in-progress tree of
+    the *next* anytime iteration, or 0, for AORRTC.  Tree sizes are only
+    faithful for single-shot planners (RRTConnect, RRTstar, ...).
     """
 
     def __init__(
@@ -151,12 +202,12 @@ class ConstrainedOMPLPlanner:
         planning_joint_names: list[str],
         q_nominal: np.ndarray,
         q_reference: np.ndarray,
-        planner: str = "AORRTC",
+        planner: str = "RRTConnect",
         validity_resolution: float = 0.01,
-        extend_range: float | None = None,
+        extend_range: float | None = 0.5,
         com_margin: float = 0.05,
         projection_delta: float = 0.05,
-        projection_lambda: float = 2.0,
+        projection_lambda: float = 10.0,
         log: bool = True,
     ):
         """Initialize Planner"""
@@ -261,11 +312,18 @@ class ConstrainedOMPLPlanner:
 
         # Constrained space: project onto the feet manifold
         self.constraint = FeetManifoldConstraint(self.feet_constraint)
-        # Build-bug workaround: make the ambient sampler project (see
-        # ProjectingStateSampler).  The allocator must outlive the space,
-        # hence the attribute reference.
+        # Build-bug workaround: make the ambient sampler produce usable
+        # manifold samples (see ProjectingStateSampler).  The reference
+        # posture seeds the anchor list; plan() adds the projected
+        # start/goal.  The allocator must outlive the space, hence the
+        # attribute references.
+        self._sampler_anchors = [self.q_reference.copy()]
         self._sampler_allocator = lambda sampler_space: ProjectingStateSampler(
-            sampler_space, self.constraint, self._bounds_low, self._bounds_high
+            sampler_space,
+            self.constraint,
+            self._bounds_low,
+            self._bounds_high,
+            anchors=self._sampler_anchors,
         )
         space.setStateSamplerAllocator(self._sampler_allocator)
         self.constrained_space = ob.ProjectedStateSpace(
@@ -347,48 +405,6 @@ class ConstrainedOMPLPlanner:
             for q in waypoints
         )
 
-    def _recover_degenerate_path(
-        self,
-        start_state,
-        goal_state,
-        start: np.ndarray,
-        goal: np.ndarray,
-    ) -> np.ndarray:
-        """Re-materialize a solution the build corrupted on readout.
-
-        This OMPL build returns constrained solution paths whose stored
-        states have all collapsed to the goal (C++ path.length() == 0 for
-        a solved problem with distinct endpoints).  When that happens the
-        route information is lost, but for a single-connect solution the
-        path IS the manifold geodesic between the endpoints -- so it is
-        rebuilt here from the space's own interpolate(), guarded by an
-        explicit checkMotion() so a corrupt multi-vertex solution cannot
-        be silently replaced by an invalid straight connect.
-        """
-        if not self.si.checkMotion(start_state, goal_state):
-            raise RuntimeError(
-                "The solver returned a corrupted (zero-length) solution "
-                "path and the direct start-goal geodesic is not valid, so "
-                "the actual route cannot be recovered from this OMPL "
-                "build's output"
-            )
-        distance = float(self.si.distance(start_state, goal_state))
-        n_segments = max(2, int(np.ceil(distance / self.projection_delta)))
-        interpolated = self.si.allocState()
-        waypoints = [start.copy()]
-        for t in np.linspace(0.0, 1.0, n_segments + 1)[1:-1]:
-            self.constrained_space.interpolate(
-                start_state, goal_state, float(t), interpolated
-            )
-            waypoints.append(
-                np.array(
-                    [interpolated[i] for i in range(self.n_dof)],
-                    dtype=float,
-                )
-            )
-        waypoints.append(goal.copy())
-        return np.array(waypoints)
-
     def plan(
         self,
         start: np.ndarray,
@@ -424,9 +440,18 @@ class ConstrainedOMPLPlanner:
         # unprojected start roots the tree off the manifold.
         start, start_correction = self._project_configuration(start, "start")
         goal, goal_correction = self._project_configuration(goal, "goal")
+        # Feasible seeds for the anchored sampler (list is shared with it).
+        self._sampler_anchors[:] = [
+            self.q_reference.copy(),
+            start.copy(),
+            goal.copy(),
+        ]
         self.last_plan_stats = {
             "start_projection_correction": start_correction,
             "goal_projection_correction": goal_correction,
+            # Kept for downstream readers; corrupted paths raise instead of
+            # being recovered, so this is always False when plan() returns.
+            "degenerate_path_recovered": False,
         }
         if self.log:
             print(
@@ -449,6 +474,19 @@ class ConstrainedOMPLPlanner:
         # Solve
         waypoints = np.array([start])
         status = self.ss.solve(float(timeout))
+        # Tree size, read before clear() wipes the planner.  Only faithful
+        # for single-shot planners; see the class docstring re AORRTC.
+        try:
+            planner_data = ob.PlannerData(self.si)
+            self.ss.getPlanner().getPlannerData(planner_data)
+            self.last_plan_stats["planner_vertices"] = int(
+                planner_data.numVertices()
+            )
+            self.last_plan_stats["planner_edges"] = int(
+                planner_data.numEdges()
+            )
+        except Exception:  # PlannerData is diagnostic; never fail a plan
+            pass
         if status.asString() == "Exact solution":
             path = self.ss.getSolutionPath()
             extracted = self._extract_path_states(path)
@@ -458,37 +496,48 @@ class ConstrainedOMPLPlanner:
                     for i in range(extracted.shape[0] - 1)
                 )
             )
-            degenerate = (
-                path_length <= self.constraint.getTolerance()
-                and float(np.linalg.norm(goal - start))
-                > self.constraint.getTolerance()
-            )
-            self.last_plan_stats["degenerate_path_recovered"] = degenerate
-            if degenerate:
-                # Build-bug workaround; see _recover_degenerate_path.
-                waypoints = self._recover_degenerate_path(
-                    start_state, goal_state, start, goal
+            tolerance = self.constraint.getTolerance()
+            # AORRTC's corrupted paths are built from the goal tree only
+            # (class docstring): they never begin at the start state.
+            # That test subsumes the [goal, goal] zero-length signature
+            # and also catches the multi-vertex variant.  Such a "solution"
+            # carries no route information, so it is an error, never a
+            # result.
+            symptoms = []
+            start_gap = float(np.linalg.norm(extracted[0] - start))
+            if start_gap > tolerance:
+                symptoms.append(
+                    f"path begins {start_gap:.3e} away from the start state"
                 )
-                # The path object is corrupt, so simplification would
-                # operate on garbage; the recovered geodesic is reported
-                # for both measurements.
-                error_before_simplify = self._max_feet_error_over(waypoints)
-                error_after_simplify = error_before_simplify
-            else:
-                error_before_simplify = self._max_feet_error_over(extracted)
-                if smooth_path:
-                    ps = og.PathSimplifier(self.si)
-                    if shortcut_path:
-                        try:
-                            ps.ropeShortcutPath(path)
-                        except Exception:
-                            ps.shortcutPath(path)
-                    ps.smoothBSpline(path)
-                # Simplification can shortcut off the manifold: measure
-                # the constraint drift it introduced rather than trusting
-                # it.
-                waypoints = self._extract_path_states(path)
-                error_after_simplify = self._max_feet_error_over(waypoints)
+            if (
+                path_length <= tolerance
+                and float(np.linalg.norm(goal - start)) > tolerance
+            ):
+                symptoms.append(
+                    f"path length {path_length:.3e} between endpoints "
+                    f"{np.linalg.norm(goal - start):.3e} apart"
+                )
+            if symptoms:
+                self.ss.clear()
+                raise RuntimeError(
+                    f"{self.planner_name} returned a corrupted solution "
+                    f"path: {'; '.join(symptoms)}.  Known AORRTC "
+                    f"first-iteration defect in this OMPL build (see class "
+                    f"docstring); plan with RRTConnect or RRTstar instead"
+                )
+            error_before_simplify = self._max_feet_error_over(extracted)
+            if smooth_path:
+                ps = og.PathSimplifier(self.si)
+                if shortcut_path:
+                    try:
+                        ps.ropeShortcutPath(path)
+                    except Exception:
+                        ps.shortcutPath(path)
+                ps.smoothBSpline(path)
+            # Simplification can shortcut off the manifold: measure the
+            # constraint drift it introduced rather than trusting it.
+            waypoints = self._extract_path_states(path)
+            error_after_simplify = self._max_feet_error_over(waypoints)
             self.last_plan_stats["max_feet_error_before_simplify"] = (
                 error_before_simplify
             )
@@ -496,13 +545,6 @@ class ConstrainedOMPLPlanner:
                 error_after_simplify
             )
             if self.log:
-                if degenerate:
-                    print(
-                        "[ConstrainedOMPLPlanner] solver returned a "
-                        "corrupted zero-length path (known build defect); "
-                        "recovered the geodesic between the projected "
-                        "endpoints instead"
-                    )
                 print(
                     f"[ConstrainedOMPLPlanner] max feet error along path: "
                     f"{error_before_simplify:.3e} before simplification, "
@@ -574,7 +616,10 @@ class ConstrainedPlanningDemoConfig:
     # defect reported by test T7.1), so the goal state fails the bounds
     # check.
     goal_frame: int = 240
-    planner: str = "AORRTC"
+    # RRTConnect: AORRTC in this build corrupts its solution path whenever
+    # the first-iteration direct connect succeeds (see ConstrainedOMPLPlanner
+    # docstring) and its PlannerData is unreliable.
+    planner: str = "RRTConnect"
     timeout: float = 10.0
     # The reference demo stands with a ~0.034 m static margin, so the
     # planner-default 0.05 would reject its own start state.
