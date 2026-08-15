@@ -235,3 +235,11 @@ decoupled_wbc/control/main/planner/run_reference_endpoint_test.sh
 # Claude Code local settings
 .claude
 CLAUDE.md
+paper/
+
+# Local WIP (untracked from git, kept on disk)
+gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/input_interface/input_interface.hpp
+gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/src/g1_deploy_onnx_ref.cpp
+gear_sonic_planner/planner/demo/view_split_box.py
+gear_sonic_planner/planner/demo/videos/
+gear_sonic_planner/planner/trail/
