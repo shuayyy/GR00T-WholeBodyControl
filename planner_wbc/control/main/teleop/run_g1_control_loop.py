@@ -33,7 +33,10 @@ from planner_wbc.control.utils.ros_utils import (
     ROSServiceServer,
 )
 from planner_wbc.control.utils.telemetry import Telemetry
-from planner_wbc.control.visualization.stability_visualizer import G1StabilityVisualizer
+from gear_sonic_planner.planner.constraints.stability_visualizer import G1StabilityVisualizer
+
+#rom planner_wbc.control.visualization.stability_visualizer import G1StabilityVisualizer
+#switch between using different policies
 
 CONTROL_NODE_NAME = "ControlPolicy"
 
