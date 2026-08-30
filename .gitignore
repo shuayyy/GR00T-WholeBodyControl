@@ -5,7 +5,6 @@ __pycache__/
 
 # C extensions
 
-
 # Distribution / packaging
 .Python
 build/
@@ -181,7 +180,6 @@ huggingface/
 !decoupled_wbc/sim2mujoco/resources/robots/g1/policy/GR00T-WholeBodyControl-Walk.onnx
 !motionbricks/out/**/*.ckpt
 
-
 # Mujoco
 MUJOCO_LOG.TXT
 
@@ -235,11 +233,25 @@ decoupled_wbc/control/main/planner/run_reference_endpoint_test.sh
 # Claude Code local settings
 .claude
 CLAUDE.md
+
 paper/
 
 # Local WIP (untracked from git, kept on disk)
 gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/input_interface/input_interface.hpp
 gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/src/g1_deploy_onnx_ref.cpp
-gear_sonic_planner/planner/demo/view_split_box.py
-gear_sonic_planner/planner/demo/videos/
-gear_sonic_planner/planner/trail/
+
+/planner_comparison_videos/
+/planner_comparison_videos_stock/
+/planner_comparison_videos_tuned/
+/planner_cost_logs_200s/
+/planner_cost_logs_200s_singleshot/
+
+decoupled_wbc/control/main/planner/debug/debug_trajectories.py
+
+gear_sonic/planner/TODO.md
+gear_sonic/planner/test/
+gear_sonic/planner/debug/
+gear_sonic/planner/constraints/test_constraints.py
+
+gear_sonic_planner/
+planner_wbc/

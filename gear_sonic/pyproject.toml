@@ -43,6 +43,7 @@ teleop = [
 # Usage: pip install -e "gear_sonic[sim]"
 sim = [
     "mujoco",
+    "lxml",
     "tyro",
     "pin",
     "pyyaml",

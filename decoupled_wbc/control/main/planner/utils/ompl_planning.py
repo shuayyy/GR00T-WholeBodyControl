@@ -12,12 +12,6 @@ from simulation.robot import MujocoRobot
 
 
 class OMPLGeometricPlanner:
-    """
-    OMPL Geometric Planner class for planning paths.
-    Using Mujoco Robot with itsmodel and data for planning.
-
-    By default, using RealVectorStateSpace and PathLengthOptimizationObjective.
-    """
 
     def __init__(
         self,
@@ -25,10 +19,11 @@ class OMPLGeometricPlanner:
         data: mujoco.MjData | None = None,
         planner: str = "RRTConnect",
         validity_resolution: float = 0.01,
-        extend_range: float | None = None,
+        # 0.05 rad: OMPL's default range reaches the goal in one extend, collapsing
+        # RRTstar to a 2-waypoint line.
+        extend_range: float | None = 0.05,
         log: bool = True,
     ):
-        """Initialize Planner"""
         # Mujoco Robot with its model and data
         self.robot = robot
         self.model = robot.model
