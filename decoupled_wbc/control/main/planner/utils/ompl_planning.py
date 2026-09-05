@@ -1,7 +1,5 @@
 import numpy as np
 import mujoco
-import time
-from scipy.spatial import cKDTree
 from scipy.interpolate import make_interp_spline
 
 import ompl.base as ob
@@ -23,9 +21,14 @@ class OMPLGeometricPlanner:
         # RRTstar to a 2-waypoint line.
         extend_range: float | None = 0.05,
         log: bool = True,
+        reference: np.ndarray | None = None,
     ):
+        """``reference``: demo joint path (N, n_dof) that ``plan`` uses for the
+        reference-biased sampler and similarity cost unless overridden per call."""
         # Mujoco Robot with its model and data
         self.robot = robot
+        self.name = planner
+        self.reference = None if reference is None else np.asarray(reference, dtype=float)
         self.model = robot.model
         # create a new data for this planning instead of
         # using the robot instance's data
@@ -77,7 +80,6 @@ class OMPLGeometricPlanner:
 
         # Set planner
         planner = getattr(og, self.planner_name)(si)
-        # planner.setSimplifySolutions(False)
         ss.setPlanner(planner)
         return ss, si
 
@@ -89,11 +91,7 @@ class OMPLGeometricPlanner:
         q = np.array([state[i] for i in range(self.n_dof)], dtype=float)
         self.robot.set_joint_qpos(q)
 
-        # TEMPORARILY DISABLED FOR SIMULATION TESTING ONLY.
-        # Restore this before real-robot deployment; otherwise OMPL may return
-        # paths that collide with the robot or the environment.
-        # in_contact = self.robot.in_contact()
-        in_contact = False
+        in_contact = self.robot.in_contact()
         # Check if in bounds
         in_bounds = self.si.satisfiesBounds(state)
         return in_bounds and not in_contact
@@ -109,16 +107,15 @@ class OMPLGeometricPlanner:
         smooth_path: bool = True,
         shortcut_path: bool = True,
     ) -> np.ndarray:
-        """Plan a path from start to goal"""
+        """Plan a path from start to goal; ``ref_traj`` defaults to the constructor's reference."""
+        if ref_traj is None:
+            ref_traj = self.reference
         # Convert start and goal to OMPL states
         start_state = self.si.allocState()
         for i in range(self.n_dof):
             start_state[i] = float(start[i])
         self.ss.setStartState(start_state)
 
-        # goal_state = self.si.allocState()
-        # goal_state[i] = float(goal[i])
-        # self.ss.setGoalState(goal_state)
         goal_state = self.si.allocState()
         if goal_type == "upper_body":
             for i in range(self.n_dof):
@@ -284,7 +281,6 @@ class RefStateSampler(ob.StateSampler):
 
     def sampleUniform(self, state):
         self.sample_count += 1
-        # print(self.sample_count)
 
         if self.rng.random() < self.p_uniform:
             self._sample_uniform_realvector(state)
@@ -368,7 +364,6 @@ class StateCostIntegralObjective(ob.OptimizationObjective):
         return self.interpolation
 
 
-# class SimilarityObjective(ob.StateCostIntegralObjective):
 class SimilarityObjective(StateCostIntegralObjective):
     def __init__(
         self,
@@ -388,15 +383,9 @@ class SimilarityObjective(StateCostIntegralObjective):
 
         self.weighted_ref_traj = self.ref_traj * self.weights
 
-        # self.nn = cKDTree(self.weighted_ref_traj)
-
     def stateCost(self, state):
         config = np.asarray(state[0 : self.n_dof], dtype=float)
         weighted_config = config * self.weights
-
-        # KDTree
-        # dist, k = self.nn.query(weighted_config, k=1)
-        # return ob.Cost(dist)
 
         # Squared Euclidean distances
         diff = self.weighted_ref_traj - weighted_config

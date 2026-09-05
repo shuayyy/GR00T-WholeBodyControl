@@ -210,7 +210,9 @@ data/
 !planner_wbc/data/**
 /dataset/
 /planner_wbc/control/dataset/
-/decoupled_wbc/control/main/planner/dataset/
+/decoupled_wbc/control/main/planner/dataset/*
+!/decoupled_wbc/control/main/planner/dataset/ICRA/
+/decoupled_wbc/control/main/planner/dataset/ICRA/*/recordings/
 bones_seed_smpl/
 sonic_release/
 # Training output logs
@@ -255,3 +257,16 @@ gear_sonic/planner/constraints/test_constraints.py
 
 gear_sonic_planner/
 planner_wbc/
+
+# unused CoM-stability ablation helpers (kept on disk, not shipped)
+/decoupled_wbc/control/main/planner/utils/com_stability.py
+/decoupled_wbc/control/main/planner/utils/stable_ompl_planning.py
+
+# experiment reports (videos, recordings, tables) - on disk only
+report/
+decoupled_wbc/control/main/planner/TODO.md
+
+# unused planning scenes (kept on disk)
+/decoupled_wbc/control/main/planner/simulation/envs/g1_all.xml
+/decoupled_wbc/control/main/planner/simulation/envs/g1_table_airbox.xml
+/decoupled_wbc/control/main/planner/simulation/envs/components/airbox.xml

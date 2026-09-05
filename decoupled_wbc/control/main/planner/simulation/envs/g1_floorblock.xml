@@ -1,0 +1,7 @@
+<!-- Planning scene: g1 floorblock.  Add a component by appending an include. -->
+<mujoco model="g1_floorblock">
+  <compiler angle="radian" autolimits="true"/>
+  <include file="components/floor.xml"/>
+  <include file="components/g1.xml"/>
+  <include file="components/floorblock.xml"/>
+</mujoco>

@@ -8,13 +8,13 @@ import mujoco
 import rclpy
 import tyro
 
+from decoupled_wbc.control.main.planner.utils.demo_trajectory import (
+    load_planning_trajectory,
+)
 from decoupled_wbc.control.main.planner.utils.ros_utils import (
     ROSDictServiceClient,
 )
-from decoupled_wbc.control.main.planner.simulation.robot import (
-    G1Up,
-    JOINT_NAMES_UP,
-)
+from decoupled_wbc.control.main.planner.simulation.robot import G1Up
 
 PLANNER_PLAN_SERVICE = "PlannerServer/plan"
 PLANNER_DIR = Path(__file__).resolve().parent
@@ -91,37 +91,8 @@ def upper_body_goal():
 
 
 def load_test_trajectory(path_value):
-    path = Path(path_value)
-    if not path.is_absolute():
-        path = PLANNER_DIR / path
-    path = path.resolve()
-    if not path.exists():
-        raise FileNotFoundError(path)
-
-    with np.load(path, allow_pickle=False) as trajectory:
-        required = {"qpos", "joint_names"}
-        missing_keys = sorted(required.difference(trajectory.files))
-        if missing_keys:
-            raise KeyError(f"Trajectory is missing keys: {missing_keys}")
-        qpos = np.asarray(trajectory["qpos"], dtype=np.float64)
-        joint_names = [
-            str(name) for name in trajectory["joint_names"].tolist()
-        ]
-
-    if qpos.ndim != 2 or qpos.shape[1] != len(joint_names):
-        raise ValueError("Trajectory qpos width does not match joint_names")
-    if len(joint_names) != len(set(joint_names)):
-        raise ValueError("Trajectory joint_names contains duplicates")
-    name_to_index = {name: idx for idx, name in enumerate(joint_names)}
-    missing_joints = [
-        name for name in JOINT_NAMES_UP if name not in name_to_index
-    ]
-    if missing_joints:
-        raise ValueError(f"Trajectory is missing planning joints: {missing_joints}")
-    qpos = qpos[:, [name_to_index[name] for name in JOINT_NAMES_UP]]
-    if qpos.shape[0] < 2 or not np.isfinite(qpos).all():
-        raise ValueError("Trajectory must contain at least two finite frames")
-    return qpos
+    """Demo trajectory in planning order (relative paths are taken from the planner package)."""
+    return load_planning_trajectory(path_value, PLANNER_DIR)
 
 
 def report_path_diagnostics(client, path, start, goal, reference):

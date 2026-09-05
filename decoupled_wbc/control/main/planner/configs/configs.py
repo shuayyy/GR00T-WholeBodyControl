@@ -291,7 +291,8 @@ class PlannerConfig:
     """Reference trajectory path relative to the planner package directory."""
 
     ompl_planner: str = "AORRTC"
-    """OMPL geometric planner name (e.g. RRTConnect, RRTstar, BITstar, AORRTC)."""
+    """OMPL planner name (RRTConnect, RRTstar, BITstar, AORRTC, ...) or PhaseRRTstar
+    (needs use_reference=True)."""
 
     planning_timeout: float = 5.0
     """Maximum time in seconds allowed for a single OMPL solve."""
@@ -316,7 +317,11 @@ class PlannerConfig:
     endpoint_tolerance: float = 1e-4
     """Maximum endpoint error accepted before a planned path is rejected."""
 
-    planning_xml: str = "simulation/g1_up.xml"
+    record: bool = True
+    """Record each executed plan to recordings/<time>_<planner>.npz next to the reference
+    and log its metrics."""
+
+    planning_xml: str = "simulation/envs/g1_free.xml"
     """MuJoCo planning scene XML path relative to the planner package directory."""
 
     visualize_planning: bool = True

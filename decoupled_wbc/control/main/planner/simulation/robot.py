@@ -9,7 +9,6 @@ import mujoco.viewer
 from simulation.mujoco_utils import joint_names_to_joint_ids
 from simulation.mujoco_utils import joints_to_limits, joints_to_qpos_dof_ids
 from simulation.mujoco_utils import get_geoms_from_group, geoms_in_contact
-from simulation.mujoco_utils import sample_qpos
 
 # Upper-body planning DOFs for the fixed-base G1 planning model (waist + arms).
 JOINT_NAMES_LEFT = [
@@ -36,6 +35,15 @@ JOINT_NAMES_UP = [
     "waist_roll_joint",
     "waist_pitch_joint",
 ] + JOINT_NAMES_BIMANUAL
+
+
+def actuator_ids_for_joints(model, joint_ids):
+    """Actuator index driving each joint, -1 where a joint has no actuator."""
+    ids = []
+    for jid in joint_ids:
+        matches = np.where(model.actuator_trnid[:, 0] == jid)[0]
+        ids.append(int(matches[0]) if matches.size else -1)
+    return ids
 
 
 class MujocoRobot:
@@ -74,6 +82,8 @@ class MujocoRobot:
         self.n_joints = len(self.joint_ids)
         # get joint limits
         self.joint_limits = np.array(joints_to_limits(model, self.joint_ids))
+        # actuator driving each planned joint (-1 when the joint has none)
+        self.joint_actuator_ids = actuator_ids_for_joints(model, self.joint_ids)
 
         # get robot geoms from subtree
         self.robot_geoms = self.get_robot_geoms(collision_geom_group)
@@ -96,9 +106,33 @@ class MujocoRobot:
         mujoco.mj_forward(self.model, self.data)
 
     def ctrl_joint_qpos(self, q):
-        """Control joint angles"""
-        self.data.ctrl[self.joint_dof_ids] = q
+        """Control joint angles through their actuators; joints without one are skipped."""
+        for act_id, value in zip(self.joint_actuator_ids, np.asarray(q)):
+            if act_id >= 0:
+                self.data.ctrl[act_id] = value
         mujoco.mj_step(self.model, self.data)
+
+    def set_base_pose(self, pos, quat_wxyz):
+        """Place a floating base; requires a free joint in the model."""
+        free = [
+            j for j in range(self.model.njnt)
+            if self.model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE
+        ]
+        if not free:
+            raise ValueError("model has no free joint to place the base with")
+        adr = self.model.jnt_qposadr[free[0]]
+        self.data.qpos[adr:adr + 3] = np.asarray(pos, dtype=float)
+        self.data.qpos[adr + 3:adr + 7] = np.asarray(quat_wxyz, dtype=float)
+        mujoco.mj_forward(self.model, self.data)
+
+    def set_fixed_qpos(self, fixed_qpos):
+        """Pose joints outside the planning set (e.g. legs) by name, once."""
+        for name, angle in fixed_qpos.items():
+            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            if jid < 0:
+                raise ValueError(f"unknown joint '{name}'")
+            self.data.qpos[self.model.jnt_qposadr[jid]] = float(angle)
+        mujoco.mj_forward(self.model, self.data)
 
     def get_ee_pose(self, idx=0):
         """Get end-effector pose"""
@@ -179,27 +213,36 @@ class G1Up(MujocoRobot):
     HOME_POS[[4, 11]] = (0.2, -0.2)
     HOME_POS[[6, 13]] = (1.5708, 1.5708)
 
-    def __init__(self, model, data=None, visualize=False):
-        """Initialize FetchRobot"""
+    def __init__(
+        self, model, data=None, visualize=False, fixed_qpos=None, base_pose=None
+    ):
+        """fixed_qpos: non-planned joints by name; base_pose: (pos, quat_wxyz)."""
         MujocoRobot.__init__(
             self,
             model,
             joint_names=JOINT_NAMES_UP,
-            root_link=None,
+            root_link="pelvis",
             data=data,
             collision_geom_group=3,
             ee_names=["left_palm", "right_palm"],
             visualize=visualize,
         )
+        if base_pose is not None:
+            self.set_base_pose(*base_pose)
+        if fixed_qpos:
+            self.set_fixed_qpos(fixed_qpos)
         # Send to home
         self.set_joint_qpos(self.HOME_POS)
         self.ctrl_joint_qpos(self.HOME_POS)
 
         # Open the gripper
-        for i, finger in enumerate(self.FINGER):
-            j_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, finger)
-            self.data.qpos[model.jnt_qposadr[j_id]] = self.FINGER_OPEN[i]
-            self.data.ctrl[model.jnt_dofadr[j_id]] = self.FINGER_OPEN[i]
+        finger_ids = joint_names_to_joint_ids(model, self.FINGER)
+        for j_id, act_id, angle in zip(
+            finger_ids, actuator_ids_for_joints(model, finger_ids), self.FINGER_OPEN
+        ):
+            self.data.qpos[model.jnt_qposadr[j_id]] = angle
+            if act_id >= 0:
+                self.data.ctrl[act_id] = angle
         mujoco.mj_forward(model, self.data)
 
 

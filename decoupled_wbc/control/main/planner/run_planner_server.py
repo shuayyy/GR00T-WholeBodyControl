@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import os
-import sys
 import threading
 import time
 from typing import Optional
@@ -12,9 +11,13 @@ import numpy as np
 import rclpy
 import tyro
 import mujoco
+import msgpack
+import msgpack_numpy as mnp
+from std_msgs.msg import ByteMultiArray
 
 from decoupled_wbc.control.main.constants import (
     CONTROL_GOAL_TOPIC,
+    DEFAULT_BASE_HEIGHT,
     STATE_TOPIC_NAME,
 )
 from decoupled_wbc.control.main.planner.configs.configs import PlannerConfig
@@ -29,28 +32,28 @@ from decoupled_wbc.control.utils.ros_utils import (
     ROSMsgPublisher,
     ROSMsgSubscriber,
 )
-from decoupled_wbc.control.main.planner.utils.ompl_planning import (
-    OMPLGeometricPlanner,
+from decoupled_wbc.control.main.planner.utils.controller_interface import (
+    build_controller_interface,
+    full_q_to_planning_qpos,
+    planning_qpos_to_controller_pose,
+)
+from decoupled_wbc.control.main.planner.utils.demo_trajectory import load_planning_trajectory
+from decoupled_wbc.control.main.planner.utils.planner_factory import make_planner
+from decoupled_wbc.control.main.planner.utils.run_recorder import RunRecorder
+from decoupled_wbc.control.main.planner.utils.trajectory_ops import (
+    resample_waypoints,
+    smoothstep_ramp,
 )
 from decoupled_wbc.control.main.planner.simulation.robot import (
     G1Up,
     JOINT_NAMES_UP,
-    JOINT_NAMES_BIMANUAL,
     JOINT_NAMES_LEFT,
-    JOINT_NAMES_RIGHT,
 )
+
 
 PLANNER_DIR = Path(__file__).resolve().parent
 PLANNER_NODE_NAME = "PlannerServer"
 PLANNER_PLAN_SERVICE = "PlannerServer/plan"
-
-
-@dataclass
-class ControllerUpperBodyInterface:
-    indices: list[int]
-    joint_names: list[str]
-    default_qpos: np.ndarray
-    name_to_index: dict[str, int]
 
 
 @dataclass
@@ -59,89 +62,6 @@ class ActiveTrajectory:
     frame_idx: int
     is_first_publish: bool
     hold_final_pose_printed: bool
-
-
-def densify_waypoints(
-    waypoints: np.ndarray, max_joint_step: float
-) -> np.ndarray:
-    """Insert intermediate waypoints so consecutive joints jump by at most max_joint_step."""
-    if waypoints.ndim != 2 or waypoints.shape[0] == 0:
-        raise ValueError(
-            f"Expected waypoints shape (N, DoF), got {waypoints.shape}"
-        )
-    if waypoints.shape[0] == 1:
-        return waypoints.astype(np.float32, copy=True)
-    if max_joint_step <= 0:
-        raise ValueError("max_joint_step must be > 0")
-
-    densified = [waypoints[0]]
-    for nxt in waypoints[1:]:
-        prev = densified[-1]
-        delta = nxt - prev
-        n_steps = int(np.ceil(np.max(np.abs(delta)) / max_joint_step))
-        n_steps = max(1, n_steps)
-        for step in range(1, n_steps + 1):
-            densified.append(prev + delta * (step / n_steps))
-    return np.asarray(densified, dtype=np.float32)
-
-
-def upper_body_pose_to_planning_qpos(
-    upper_body_pose: np.ndarray,
-    controller_interface: ControllerUpperBodyInterface,
-) -> np.ndarray:
-    """Map controller-ordered upper-body joints into the 17-DoF planning configuration."""
-    upper_body_pose = np.asarray(upper_body_pose, dtype=np.float32).reshape(-1)
-    if upper_body_pose.shape[0] != len(controller_interface.joint_names):
-        raise ValueError(
-            f"Upper-body pose length {upper_body_pose.shape[0]} does not match "
-            f"controller upper_body size {len(controller_interface.joint_names)}"
-        )
-
-    planning_q = np.zeros(len(JOINT_NAMES_UP), dtype=np.float32)
-    for plan_idx, joint_name in enumerate(JOINT_NAMES_UP):
-        controller_idx = controller_interface.name_to_index.get(joint_name)
-        if controller_idx is None:
-            raise ValueError(
-                f"Planning joint '{joint_name}' missing from controller upper_body"
-            )
-        planning_q[plan_idx] = upper_body_pose[controller_idx]
-    return planning_q
-
-
-def full_q_to_planning_qpos(
-    full_q: np.ndarray,
-    controller_interface: ControllerUpperBodyInterface,
-) -> np.ndarray:
-    """Map a full-body joint vector into the 17-DoF planning configuration."""
-    full_q = np.asarray(full_q, dtype=np.float32).reshape(-1)
-    if full_q.shape[0] < max(controller_interface.indices) + 1:
-        raise ValueError(
-            f"Robot state q length {full_q.shape[0]} is too short for upper-body indices"
-        )
-    upper_body_pose = full_q[controller_interface.indices]
-    return upper_body_pose_to_planning_qpos(
-        upper_body_pose, controller_interface
-    )
-
-
-def planning_qpos_to_controller_pose(
-    planning_q: np.ndarray,
-    controller_interface: ControllerUpperBodyInterface,
-) -> np.ndarray:
-    """Map a planning configuration into the controller upper-body target vector."""
-    planning_q = np.asarray(planning_q, dtype=np.float32).reshape(-1)
-    if planning_q.shape[0] != len(JOINT_NAMES_UP):
-        raise ValueError(
-            f"Expected planning qpos length {len(JOINT_NAMES_UP)}, got {planning_q.shape[0]}"
-        )
-
-    target = controller_interface.default_qpos.copy()
-    for plan_idx, joint_name in enumerate(JOINT_NAMES_UP):
-        controller_idx = controller_interface.name_to_index.get(joint_name)
-        if controller_idx is None:
-            continue
-        target[controller_idx] = planning_q[plan_idx]
-    return target.astype(np.float32, copy=False)
 
 
 def parse_plan_request(
@@ -207,15 +127,24 @@ class PlannerServer:
         self.config = config
         self.logger = logger
         self.state_subscriber = state_subscriber
-        self.controller_interface = self.build_controller_interface(config)
+        self.controller_interface, self.full_joint_names = build_controller_interface(
+            config.enable_waist, config.high_elbow_pose
+        )
         self.ref_traj = self.load_reference_trajectory(config)
 
         xml_path = self.resolve_planning_xml(config)
         model = self.load_planning_model(xml_path)
-        self.robot = G1Up(model=model, visualize=config.visualize_planning)
-        self.planner = OMPLGeometricPlanner(
+        fixed_qpos, base_pose = self.standing_pose(model, config)
+        self.robot = G1Up(
+            model=model,
+            visualize=config.visualize_planning,
+            fixed_qpos=fixed_qpos,
+            base_pose=base_pose,
+        )
+        self.planner = make_planner(
+            config.ompl_planner,
             self.robot,
-            planner=config.ompl_planner,
+            reference=self.ref_traj,
             validity_resolution=config.validity_resolution,
             log=True,
         )
@@ -225,15 +154,20 @@ class PlannerServer:
         self._cancel_execution = False
         self._planning = False
 
-        missing = [
-            name
-            for name in JOINT_NAMES_UP
-            if name not in self.controller_interface.name_to_index
-        ]
-        if missing:
-            raise ValueError(
-                f"Controller upper_body missing planning joints: {missing}"
+        self.recorder: Optional[RunRecorder] = None
+        if config.record:
+            self.recorder = RunRecorder(
+                self.recording_dir(config),
+                self.controller_interface,
+                self.full_joint_names,
+                self.ref_traj,
+                self.logger,
             )
+            # Own subscription: the shared ROSMsgSubscriber keeps only the latest message.
+            self._record_state_sub = state_subscriber.node.create_subscription(
+                ByteMultiArray, STATE_TOPIC_NAME, self._on_state_msg, 50
+            )
+            self.logger.info(f"Recording executed plans to {self.recorder.record_dir}")
 
         self.logger.info(f"Planning XML: {xml_path}")
         self.logger.info(f"OMPL planner: {config.ompl_planner}")
@@ -290,7 +224,7 @@ class PlannerServer:
             )
 
         self.logger.info(
-            f"Planning with {self.config.ompl_planner} "
+            f"Planning with {self.planner.name} "
             f"(timeout={self.config.planning_timeout}s, goal_type={goal_type})"
         )
         t0 = time.monotonic()
@@ -298,7 +232,6 @@ class PlannerServer:
             start,
             goal,
             goal_type,
-            self.ref_traj,
             timeout=self.config.planning_timeout,
             smooth_path=self.config.smooth_path,
             shortcut_path=self.config.shortcut_path,
@@ -340,12 +273,12 @@ class PlannerServer:
                 f"tolerance={self.config.endpoint_tolerance:.6f}"
             )
 
-        waypoints = densify_waypoints(
+        waypoints = resample_waypoints(
             solution, self.config.max_joint_step
         )
         self.logger.info(
             f"Plan ready in {elapsed:.3f}s: "
-            f"{len(solution)} raw -> {len(waypoints)} densified waypoints"
+            f"{len(solution)} raw -> {len(waypoints)} resampled waypoints"
         )
         return waypoints, elapsed
 
@@ -408,6 +341,9 @@ class PlannerServer:
             "initial" - published first waypoint (already waited transition time)
             "streaming" - published a normal waypoint
         """
+        if self.recorder is not None:
+            self.recorder.finish_if_settled()
+
         with self._lock:
             active = self._active
             if active is None:
@@ -416,23 +352,17 @@ class PlannerServer:
             is_first = active.is_first_publish
             qpos = active.qpos
 
-        target_upper_body_pose = planning_qpos_to_controller_pose(
-            qpos[frame_idx], self.controller_interface
-        )
-        t_now = time.monotonic()
         publish_period = 1.0 / self.config.planner_frequency
-        target_time = (
-            t_now + self.config.initial_transition_time
-            if is_first
-            else t_now + publish_period
-        )
-        control_publisher.publish(
-            {
-                "target_upper_body_pose": target_upper_body_pose,
-                "timestamp": t_now,
-                "target_time": target_time,
-            }
-        )
+        if is_first:
+            if self.recorder is not None:
+                self.recorder.start(qpos, self.planner.name)
+            self.publish_start_ramp(control_publisher, qpos[0], keep_running)
+            if self.recorder is not None:
+                self.recorder.mark_stream_start()
+        else:
+            self.publish_target(
+                control_publisher, qpos[frame_idx], time.monotonic() + publish_period
+            )
 
         with self._lock:
             if self._active is None or self._cancel_execution:
@@ -454,16 +384,69 @@ class PlannerServer:
                     active.frame_idx = active.qpos.shape[0] - 1
                 else:
                     self._active = None
+                if self.recorder is not None:
+                    self.recorder.mark_hold()
 
-        if is_first:
-            self.logger.info(
-                f"Publishing initial planned waypoint for {self.config.initial_transition_time}s"
+        return "initial" if is_first else "streaming"
+
+    def publish_target(
+        self, control_publisher: ROSMsgPublisher, planning_q: np.ndarray, target_time: float
+    ) -> None:
+        target_upper_body_pose = planning_qpos_to_controller_pose(
+            planning_q, self.controller_interface
+        )
+        if self.recorder is not None:
+            self.recorder.on_goal(target_upper_body_pose, target_time)
+        control_publisher.publish(
+            {
+                "target_upper_body_pose": target_upper_body_pose,
+                # needed so the balance policy executes the commanded waist orientation
+                "navigate_cmd": [0.0, 0.0, 0.0],
+                "timestamp": time.monotonic(),
+                "target_time": target_time,
+            }
+        )
+
+    def publish_start_ramp(
+        self, control_publisher: ROSMsgPublisher, start_qpos: np.ndarray, keep_running
+    ) -> None:
+        """Smoothstep ramp from the measured pose to the plan start over
+        initial_transition_time (single target if no robot state)."""
+        period = 1.0 / self.config.planner_frequency
+        duration = self.config.initial_transition_time
+        state = self.state_subscriber.get_msg()
+        if state is None or "q" not in state:
+            self.logger.warn(
+                "No robot state; publishing the plan start as a single target"
             )
-            interruptible_sleep(
-                self.config.initial_transition_time, keep_running
-            )
-            return "initial"
-        return "streaming"
+            self.publish_target(control_publisher, start_qpos, time.monotonic() + duration)
+            interruptible_sleep(duration, keep_running)
+            return
+        current = full_q_to_planning_qpos(
+            np.asarray(state["q"], dtype=np.float32).reshape(-1),
+            self.controller_interface,
+        )
+        start_qpos = np.asarray(start_qpos, dtype=np.float32)
+        steps = max(1, int(round(duration * self.config.planner_frequency)))
+        self.logger.info(
+            f"Ramping to plan start over {duration:.1f}s ({steps} steps, "
+            f"largest joint gap {np.abs(start_qpos - current).max():.3f} rad)"
+        )
+        t_next = time.monotonic()
+        for pose in smoothstep_ramp(current, start_qpos, steps):
+            if not keep_running() or self._cancel_execution:
+                return
+            t_next += period
+            self.publish_target(control_publisher, pose, t_next)
+            remaining = t_next - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+
+    def _on_state_msg(self, msg: ByteMultiArray) -> None:
+        """Robot state topic -> recorder (runs on the ROS executor thread)."""
+        state = msgpack.unpackb(bytes([b for a in msg.data for b in a]), object_hook=mnp.decode)
+        if "q" in state:
+            self.recorder.on_state(state["q"], state.get("floating_base_pose", np.zeros(7)))
 
     # Helper functions
     def load_reference_trajectory(
@@ -471,97 +454,38 @@ class PlannerServer:
     ) -> Optional[np.ndarray]:
         if not config.use_reference:
             return None
-
-        reference_path = Path(config.reference_trajectory_path)
-        if not reference_path.is_absolute():
-            reference_path = PLANNER_DIR / reference_path
-        reference_path = reference_path.resolve()
-        if not reference_path.exists():
-            raise FileNotFoundError(reference_path)
-
-        if reference_path.suffix == ".npz":
-            with np.load(reference_path, allow_pickle=False) as data:
-                required = {"qpos", "joint_names"}
-                missing_keys = sorted(required.difference(data.files))
-                if missing_keys:
-                    raise KeyError(
-                        f"Reference dataset {reference_path} is missing "
-                        f"keys: {missing_keys}"
-                    )
-                reference = data["qpos"].copy()
-                joint_names = [
-                    str(name) for name in data["joint_names"].tolist()
-                ]
-            if reference.ndim != 2 or reference.shape[1] != len(joint_names):
-                raise ValueError(
-                    "Reference qpos width does not match joint_names"
-                )
-            if len(joint_names) != len(set(joint_names)):
-                raise ValueError("Reference joint_names contains duplicates")
-            name_to_index = {
-                name: idx for idx, name in enumerate(joint_names)
-            }
-            missing_joints = [
-                name for name in JOINT_NAMES_UP if name not in name_to_index
-            ]
-            if missing_joints:
-                raise ValueError(
-                    f"Reference is missing planning joints: {missing_joints}"
-                )
-            reference = reference[
-                :, [name_to_index[name] for name in JOINT_NAMES_UP]
-            ]
-        elif reference_path.suffix == ".npy":
-            reference = np.load(reference_path, allow_pickle=False)
-        else:
-            raise ValueError(
-                "Reference trajectory must be a .npy or .npz file"
-            )
-
-        reference = np.asarray(reference, dtype=np.float64)
-        expected_width = len(JOINT_NAMES_UP)
-        if reference.ndim != 2 or reference.shape[1] != expected_width:
-            raise ValueError(
-                f"Expected reference shape (N, {expected_width}), "
-                f"got {reference.shape}"
-            )
-        if reference.shape[0] < 2:
-            raise ValueError("Reference trajectory needs at least two frames")
-        if not np.isfinite(reference).all():
-            raise ValueError("Reference trajectory contains non-finite values")
-
+        reference = load_planning_trajectory(config.reference_trajectory_path, PLANNER_DIR)
         self.logger.info(
-            f"Reference trajectory: {reference_path} ({reference.shape[0]} frames)"
+            f"Reference trajectory: {config.reference_trajectory_path} "
+            f"({reference.shape[0]} frames)"
         )
         return reference
 
-    def build_controller_interface(
-        self,
-        config: PlannerConfig,
-    ) -> ControllerUpperBodyInterface:
-        waist_location = (
-            "lower_and_upper_body" if config.enable_waist else "lower_body"
-        )
+    @staticmethod
+    def recording_dir(config: PlannerConfig) -> Path:
+        """``recordings/`` next to the reference trajectory, or under the planner package."""
+        base = PLANNER_DIR
+        if config.use_reference and config.reference_trajectory_path:
+            ref = Path(config.reference_trajectory_path)
+            base = (ref if ref.is_absolute() else PLANNER_DIR / ref).resolve().parent
+        return base / "recordings"
+
+    def standing_pose(self, model, config: PlannerConfig):
+        """WBC default pose for the non-planned joints and the base of a full-body
+        planning model; (None, None) for a model without them (g1_up.xml)."""
         robot_model = instantiate_g1_robot_model(
-            waist_location=waist_location,
+            waist_location="lower_and_upper_body" if config.enable_waist else "lower_body",
             high_elbow_pose=config.high_elbow_pose,
         )
-        upper_body_indices = robot_model.get_joint_group_indices("upper_body")
-        upper_body_joint_names = [
-            robot_model.joint_names[idx] for idx in upper_body_indices
-        ]
-        default_qpos = robot_model.default_body_pose[
-            upper_body_indices
-        ].astype(np.float32, copy=True)
-        name_to_index = {
-            name: idx for idx, name in enumerate(upper_body_joint_names)
+        model_joints = {model.joint(i).name for i in range(model.njnt)}
+        fixed_qpos = {
+            name: float(value)
+            for name, value in zip(robot_model.joint_names, robot_model.default_body_pose)
+            if name not in JOINT_NAMES_UP and name in model_joints
         }
-        return ControllerUpperBodyInterface(
-            indices=upper_body_indices,
-            joint_names=upper_body_joint_names,
-            default_qpos=default_qpos,
-            name_to_index=name_to_index,
-        )
+        has_free = any(model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE for i in range(model.njnt))
+        base_pose = (np.array([0.0, 0.0, DEFAULT_BASE_HEIGHT]), np.array([1.0, 0.0, 0.0, 0.0])) if has_free else None
+        return (fixed_qpos or None), base_pose
 
     def resolve_planning_xml(self, config: PlannerConfig) -> Path:
         xml_path = Path(config.planning_xml)
