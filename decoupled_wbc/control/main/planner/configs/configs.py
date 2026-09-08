@@ -281,8 +281,16 @@ class PlannerConfig:
     planner_frequency: float = 20.0
     """Publishing frequency in Hz while streaming a planned trajectory."""
 
-    initial_transition_time: float = 2.0
-    """Time used to smoothly move to the first planned waypoint."""
+    initial_transition_time: float = 3.0
+    """Duration of each ramp: measured pose to plan start, and back again."""
+
+    step: bool = True
+    """Wait for Enter in the server terminal before each stage: ramp to the plan start,
+    execute the plan, ramp back.  The goal stream keeps running while it waits."""
+
+    ramp_down: bool = True
+    """After the recording is saved, ramp back to the pose the robot was in before the
+    start ramp.  Disable to hold the plan's final pose instead."""
 
     use_reference: bool = False
     """Use the configured trajectory for reference-biased sampling and cost."""

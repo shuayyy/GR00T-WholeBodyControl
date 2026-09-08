@@ -54,14 +54,18 @@ from decoupled_wbc.control.main.planner.simulation.robot import (
 PLANNER_DIR = Path(__file__).resolve().parent
 PLANNER_NODE_NAME = "PlannerServer"
 PLANNER_PLAN_SERVICE = "PlannerServer/plan"
+STATE_WAIT_TIMEOUT = 5.0  # give up on a plan if no robot state arrives before its ramp
 
 
 @dataclass
 class ActiveTrajectory:
+    """One execution, advanced stage by stage: ramp_up -> execute -> settle -> ramp_down."""
+
     qpos: np.ndarray
     frame_idx: int
-    is_first_publish: bool
-    hold_final_pose_printed: bool
+    stage: str = "ramp_up"
+    home_qpos: Optional[np.ndarray] = None  # measured pose before ramp_up, target of ramp_down
+    waiting_since: Optional[float] = None
 
 
 def parse_plan_request(
@@ -288,8 +292,6 @@ class PlannerServer:
             self._active = ActiveTrajectory(
                 qpos=waypoints.astype(np.float32, copy=False),
                 frame_idx=0,
-                is_first_publish=True,
-                hold_final_pose_printed=False,
             )
             self._cancel_execution = False
 
@@ -334,11 +336,11 @@ class PlannerServer:
         self, control_publisher: ROSMsgPublisher, keep_running
     ) -> str:
         """
-        Publish one trajectory frame.
+        Advance the active execution by one step.
 
         Returns:
             "idle" - nothing to publish
-            "initial" - published first waypoint (already waited transition time)
+            "initial" - ran a ramp (it already took its own time)
             "streaming" - published a normal waypoint
         """
         if self.recorder is not None:
@@ -349,43 +351,163 @@ class PlannerServer:
             if active is None:
                 return "idle"
             frame_idx = active.frame_idx
-            is_first = active.is_first_publish
+            stage = active.stage
             qpos = active.qpos
+            home_qpos = active.home_qpos
 
         publish_period = 1.0 / self.config.planner_frequency
-        if is_first:
+
+        if stage == "ramp_up":
+            # Capture where the robot is now: this is where ramp_down will bring it back.
+            home = self.measured_qpos()
+            if home is None:
+                with self._lock:
+                    if self._active is None:
+                        return "idle"
+                    if self._active.waiting_since is None:
+                        self._active.waiting_since = time.monotonic()
+                        self.logger.warn("Waiting for robot state before the start ramp")
+                    waited = time.monotonic() - self._active.waiting_since
+                if waited > STATE_WAIT_TIMEOUT:
+                    return self.abandon(
+                        f"no robot state after {STATE_WAIT_TIMEOUT:.0f}s; refusing to move"
+                    )
+                return "idle"
+            if not self.confirm(
+                f"ramp to the plan start over {self.config.initial_transition_time:.1f}s "
+                f"(largest joint gap {np.abs(qpos[0] - home).max():.3f} rad)",
+                control_publisher,
+                home,
+                keep_running,
+            ):
+                return self.abandon("cancelled before the start ramp")
             if self.recorder is not None:
                 self.recorder.start(qpos, self.planner.name)
-            self.publish_start_ramp(control_publisher, qpos[0], keep_running)
-            if self.recorder is not None:
-                self.recorder.mark_stream_start()
-        else:
+            self.publish_ramp(
+                control_publisher, home, qpos[0], keep_running, "plan start"
+            )
+            with self._lock:
+                if self._active is None or self._cancel_execution:
+                    return "idle"
+                self._active.home_qpos = home
+                self._active.stage = "execute"
+            return "initial"
+
+        if stage == "execute":
+            if frame_idx == 0:
+                if not self.confirm(
+                    f"execute the plan ({qpos.shape[0]} waypoints, "
+                    f"{qpos.shape[0] * publish_period:.1f}s)",
+                    control_publisher,
+                    qpos[0],
+                    keep_running,
+                ):
+                    return self.abandon("cancelled before execution")
+                if self.recorder is not None:
+                    self.recorder.mark_stream_start()
             self.publish_target(
                 control_publisher, qpos[frame_idx], time.monotonic() + publish_period
             )
-
-        with self._lock:
-            if self._active is None or self._cancel_execution:
-                return "idle"
-            active = self._active
-            if is_first:
-                active.is_first_publish = False
-                if active.qpos.shape[0] > 1:
-                    active.frame_idx = 1
-            elif active.frame_idx < active.qpos.shape[0] - 1:
-                active.frame_idx += 1
-            else:
-                if self.config.hold_final_pose:
-                    if not active.hold_final_pose_printed:
-                        self.logger.info(
-                            "Reached final planned waypoint; holding final pose."
-                        )
-                        active.hold_final_pose_printed = True
-                    active.frame_idx = active.qpos.shape[0] - 1
+            with self._lock:
+                if self._active is None or self._cancel_execution:
+                    return "idle"
+                active = self._active
+                if active.frame_idx < active.qpos.shape[0] - 1:
+                    active.frame_idx += 1
                 else:
-                    self._active = None
-                if self.recorder is not None:
-                    self.recorder.mark_hold()
+                    self.logger.info("Reached final planned waypoint; holding final pose.")
+                    active.stage = "settle"
+                    if self.recorder is not None:
+                        self.recorder.mark_hold()
+            return "streaming"
+
+        if stage == "settle":
+            # Hold the final pose until the recording has been saved, then offer ramp_down.
+            self.publish_target(
+                control_publisher, qpos[-1], time.monotonic() + publish_period
+            )
+            if self.recorder is None or not self.recorder.active:
+                with self._lock:
+                    if self._active is not None and not self._cancel_execution:
+                        self._active.stage = "ramp_down"
+            return "streaming"
+
+        if stage == "ramp_down":
+            if home_qpos is None or not self.config.ramp_down:
+                return self.hold_or_stop(control_publisher, qpos[-1], publish_period)
+            if not self.confirm(
+                f"ramp back to the pose you started from over "
+                f"{self.config.initial_transition_time:.1f}s "
+                f"(largest joint gap {np.abs(np.asarray(home_qpos) - qpos[-1]).max():.3f} rad)",
+                control_publisher,
+                qpos[-1],
+                keep_running,
+            ):
+                return self.abandon("cancelled before the return ramp")
+            self.publish_ramp(
+                control_publisher, qpos[-1], np.asarray(home_qpos), keep_running, "return"
+            )
+            with self._lock:
+                if self._active is not None and not self._cancel_execution:
+                    self._active.stage = "done"
+            self.logger.info("Run complete; holding the pose you started from.")
+            return "initial"
+
+        return self.hold_or_stop(control_publisher, home_qpos, publish_period)
+
+    def hold_or_stop(
+        self, control_publisher: ROSMsgPublisher, pose, publish_period: float
+    ) -> str:
+        """Keep the last pose commanded, or drop the trajectory if holding is disabled."""
+        if not self.config.hold_final_pose or pose is None:
+            with self._lock:
+                self._active = None
+            return "idle"
+        self.publish_target(
+            control_publisher, np.asarray(pose), time.monotonic() + publish_period
+        )
+        return "streaming"
+
+    def abandon(self, reason: str) -> str:
+        """Operator declined a stage: stop commanding and keep whatever was recorded."""
+        self.logger.info(f"{reason}; the robot holds its current pose.")
+        if self.recorder is not None and self.recorder.active:
+            self.recorder.finish()
+        with self._lock:
+            self._active = None
+        return "idle"
+
+    def confirm(
+        self, what: str, control_publisher: ROSMsgPublisher, hold_qpos, keep_running
+    ) -> bool:
+        """Wait for the operator's Enter, holding ``hold_qpos`` at the publish rate meanwhile.
+
+        The stream has to keep running: the controller injects a safe goal after 1 s
+        without one, which would move the robot while it waits.
+        """
+        if not self.config.step:
+            return True
+        print(f"\n>>> press Enter to {what} (Ctrl-C to stop here)", flush=True)
+        answer: list[bool] = []
+
+        def read_line() -> None:
+            try:
+                input()
+                answer.append(True)
+            except (EOFError, KeyboardInterrupt):
+                answer.append(False)
+
+        waiter = threading.Thread(target=read_line, daemon=True)
+        waiter.start()
+        period = 1.0 / self.config.planner_frequency
+        while not answer:
+            if not keep_running() or self._cancel_execution:
+                return False
+            self.publish_target(
+                control_publisher, np.asarray(hold_qpos), time.monotonic() + period
+            )
+            time.sleep(period)
+        return bool(answer[0])
 
         return "initial" if is_first else "streaming"
 
@@ -407,33 +529,36 @@ class PlannerServer:
             }
         )
 
-    def publish_start_ramp(
-        self, control_publisher: ROSMsgPublisher, start_qpos: np.ndarray, keep_running
-    ) -> None:
-        """Smoothstep ramp from the measured pose to the plan start over
-        initial_transition_time (single target if no robot state)."""
-        period = 1.0 / self.config.planner_frequency
-        duration = self.config.initial_transition_time
+    def measured_qpos(self) -> Optional[np.ndarray]:
+        """Planning-joint pose from the latest robot state, or None if none has arrived."""
         state = self.state_subscriber.get_msg()
         if state is None or "q" not in state:
-            self.logger.warn(
-                "No robot state; publishing the plan start as a single target"
-            )
-            self.publish_target(control_publisher, start_qpos, time.monotonic() + duration)
-            interruptible_sleep(duration, keep_running)
-            return
-        current = full_q_to_planning_qpos(
+            return None
+        return full_q_to_planning_qpos(
             np.asarray(state["q"], dtype=np.float32).reshape(-1),
             self.controller_interface,
         )
-        start_qpos = np.asarray(start_qpos, dtype=np.float32)
+
+    def publish_ramp(
+        self,
+        control_publisher: ROSMsgPublisher,
+        from_qpos: np.ndarray,
+        to_qpos: np.ndarray,
+        keep_running,
+        label: str,
+    ) -> None:
+        """Smoothstep ramp between two poses over initial_transition_time."""
+        period = 1.0 / self.config.planner_frequency
+        duration = self.config.initial_transition_time
+        from_qpos = np.asarray(from_qpos, dtype=np.float32)
+        to_qpos = np.asarray(to_qpos, dtype=np.float32)
         steps = max(1, int(round(duration * self.config.planner_frequency)))
         self.logger.info(
-            f"Ramping to plan start over {duration:.1f}s ({steps} steps, "
-            f"largest joint gap {np.abs(start_qpos - current).max():.3f} rad)"
+            f"Ramping to {label} over {duration:.1f}s ({steps} steps, "
+            f"largest joint gap {np.abs(to_qpos - from_qpos).max():.3f} rad)"
         )
         t_next = time.monotonic()
-        for pose in smoothstep_ramp(current, start_qpos, steps):
+        for pose in smoothstep_ramp(from_qpos, to_qpos, steps):
             if not keep_running() or self._cancel_execution:
                 return
             t_next += period

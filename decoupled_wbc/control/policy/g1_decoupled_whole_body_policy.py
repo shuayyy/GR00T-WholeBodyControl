@@ -7,6 +7,8 @@ from pinocchio import rpy
 from decoupled_wbc.control.base.policy import Policy
 from decoupled_wbc.control.main.constants import DEFAULT_NAV_CMD
 
+HOME_RAMP_S = 5.0  # ']' glides the upper body to the default pose over this long
+
 
 class G1DecoupledWholeBodyPolicy(Policy):
     """
@@ -26,6 +28,7 @@ class G1DecoupledWholeBodyPolicy(Policy):
         self.upper_body_policy = upper_body_policy
         self.last_goal_time = time_module.monotonic()
         self.is_in_teleop_mode = False  # Track if lower body is in teleop mode
+        self._home_ramp_pending = False  # set by ']', consumed by get_action on the control thread
 
     def set_observation(self, observation):
         # Upper body policy is open loop (just interpolation), so we don't need to set the observation
@@ -91,6 +94,10 @@ class G1DecoupledWholeBodyPolicy(Policy):
     def get_action(self, time: Optional[float] = None):
         current_time = time if time is not None else time_module.monotonic()
 
+        if self._home_ramp_pending:
+            self._home_ramp_pending = False
+            self.schedule_home_ramp(current_time)
+
         # Safety timeout: Only apply when in teleop mode (communication loss dangerous)
         # When in keyboard mode, no timeout needed (user controls directly)
         if self.is_in_teleop_mode:
@@ -146,7 +153,31 @@ class G1DecoupledWholeBodyPolicy(Policy):
 
         return {"q": q}
 
+    def schedule_home_ramp(self, now: float) -> None:
+        """Glide the upper body from its current target to the default pose over HOME_RAMP_S."""
+        idx = self.robot_model.get_joint_group_indices("upper_body")
+        start = np.asarray(
+            self.upper_body_policy.get_action(now)["target_upper_body_pose"], dtype=float
+        )
+        home = np.asarray(self.robot_model.default_body_pose[idx], dtype=float)
+        steps = int(HOME_RAMP_S * 20)
+        alpha = np.arange(1, steps + 1) / steps
+        alpha = alpha * alpha * (3.0 - 2.0 * alpha)  # smoothstep: zero velocity at both ends
+        self.set_goal(
+            {
+                "target_upper_body_pose": [start + a * (home - start) for a in alpha],
+                "target_time": [now + HOME_RAMP_S * k / steps for k in range(1, steps + 1)],
+                "interpolation_garbage_collection_time": now,
+            }
+        )
+        print(
+            f"Ramping upper body to the default pose over {HOME_RAMP_S:.0f}s "
+            f"(largest joint gap {np.abs(home - start).max():.3f} rad)"
+        )
+
     def handle_keyboard_button(self, key):
+        if key == "]":
+            self._home_ramp_pending = True
         try:
             self.lower_body_policy.locomotion_policy.handle_keyboard_button(key)
         except AttributeError:

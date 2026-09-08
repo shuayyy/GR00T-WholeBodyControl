@@ -1,6 +1,7 @@
 from copy import deepcopy
 import time
 
+import numpy as np
 import tyro
 
 from decoupled_wbc.control.envs.g1.g1_env import G1Env
@@ -34,6 +35,27 @@ from decoupled_wbc.control.utils.ros_utils import (
 from decoupled_wbc.control.utils.telemetry import Telemetry
 
 CONTROL_NODE_NAME = "ControlPolicy"
+
+
+def wait_for_first_observation(env: G1Env, timeout_s: float) -> dict:
+    """Poll until the robot (or sim) has published its first joint state.
+
+    Before that, the state processor has no lowstate and ``observe()`` raises on
+    the missing sample; on hardware that can take a moment after the loop starts.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            obs = env.observe()
+            if obs is not None and "q" in obs:
+                return obs
+        except AttributeError:
+            pass  # no lowstate sample yet
+        if time.monotonic() > deadline:
+            raise RuntimeError(
+                f"No robot state within {timeout_s:.0f}s; is the robot or simulator up?"
+            )
+        time.sleep(0.05)
 
 
 def main(config: ControlLoopConfig):
@@ -74,6 +96,11 @@ def main(config: ControlLoopConfig):
     )
     if env.sim and not config.sim_sync_mode:
         env.start_simulator()
+
+    # Seed the arm target with the measured pose, so the first command is where the
+    # arms already are instead of the model default they would otherwise snap to.
+    first_obs = wait_for_first_observation(env, timeout_s=10.0)
+    robot_model.set_initial_body_pose(np.array(first_obs["q"], dtype=np.float64))
 
     wbc_policy = get_wbc_policy(
         "g1", robot_model, wbc_config, init_time=time.monotonic()

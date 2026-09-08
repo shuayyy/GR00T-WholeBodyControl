@@ -32,3 +32,5 @@ Demos: `dataset/ICRA/<task>/traj.npz` (`wave`: `traj_half.npz`).
 python decoupled_wbc/control/main/planner/test/render_traj.py --npz <recording.npz>                 # robot
 python decoupled_wbc/control/main/planner/test/render_traj.py --npz <recording.npz> --source plan   # planned path
 ```
+
+Hardware run-through: [DEPLOY.md](DEPLOY.md).
