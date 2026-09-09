@@ -151,6 +151,7 @@ class PlannerServer:
             reference=self.ref_traj,
             validity_resolution=config.validity_resolution,
             log=True,
+            phase_sigma_scale=config.phase_sigma_scale,
         )
 
         self._lock = threading.Lock()

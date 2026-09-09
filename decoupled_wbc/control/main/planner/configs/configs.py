@@ -305,6 +305,11 @@ class PlannerConfig:
     planning_timeout: float = 5.0
     """Maximum time in seconds allowed for a single OMPL solve."""
 
+    phase_sigma_scale: float = 1.0
+    """PhaseRRTstar sampling width, as a multiple of the arclength-derived default.
+    1.0 is the shipped value; a blocked scene needs a wider tube to find a detour
+    (see report/ICRA/tables.md section 6)."""
+
     goal_type: Literal["upper_body", "bimanual", "left", "right"] = (
         "upper_body"
     )
