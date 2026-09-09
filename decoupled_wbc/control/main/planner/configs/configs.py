@@ -281,7 +281,7 @@ class PlannerConfig:
     planner_frequency: float = 20.0
     """Publishing frequency in Hz while streaming a planned trajectory."""
 
-    initial_transition_time: float = 3.0
+    initial_transition_time: float = 5.0
     """Duration of each ramp: measured pose to plan start, and back again."""
 
     step: bool = True
