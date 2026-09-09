@@ -117,25 +117,37 @@ python pose_estimation/publish_object_tf.py \
 ```
 
 To connect this camera-relative object transform to the complete robot TF
-tree, run the Planner-WBC joint-state bridge in the configured Planner-WBC ROS
-environment:
+tree, run the joint-state bridge in a ROS-enabled terminal:
 
 ```bash
-PYTHONPATH=. python planner_wbc/scripts/collect_robot_transform.py
+PYTHONPATH=. python pose_estimation/collect_robot_transform.py
 ```
 
-## Validate before grasping
+It republishes the measured G1 state on `/joint_states` and runs
+`robot_state_publisher` with the G1 URDF, so TF can compose
 
-Before using the published position for manipulation, compare TF against
-several known real-world object positions:
+```text
+pelvis -> torso_link -> d435_link -> detected_object
+```
 
-- directly in front of the camera
-- left and right of the camera
-- above and below the camera
+`d435_link` is a fixed joint off `torso_link` in
+`decoupled_wbc/control/robot_model/model_data/g1/g1_29dof_with_hand.urdf`
+(47.6 degree downward pitch). To capture one transform for inspection:
 
-FoundationPose reports poses in camera optical coordinates. Confirm that the
-configured `d435_link` axes match the observed TF behavior. If they do not,
-add an explicit optical-frame transform or convert the pose before publishing.
+```bash
+python pose_estimation/save_robot_transform.py --parent pelvis --child d435_link
+```
+
+## Frame validation
+
+The published TF was validated against known real-world object positions
+(in front of, left and right of, and above and below the camera). The
+FoundationPose optical-frame axes agree with `d435_link`, so
+`publish_object_tf.py` broadcasts the 4x4 pose unchanged, with no additional
+frame conversion.
+
+Repeat this check if the camera, its mounting, or the URDF `d435_joint`
+origin changes.
 
 ## Camera utilities
 
@@ -154,6 +166,9 @@ add an explicit optical-frame transform or convert the pose before publishing.
 - `estimater.py`: FoundationPose estimator implementation used by
   `detector.py`.
 - `publish_object_tf.py`: converts the streamed 4x4 pose to a ROS 2 transform.
+- `collect_robot_transform.py`: bridges the measured G1 state to
+  `/joint_states` and runs `robot_state_publisher` for the full TF tree.
+- `save_robot_transform.py`: saves one live TF transform to JSON.
 - `g1_head/`: generated camera captures and pose results; ignored by Git.
 
 `estimater.py` retains its upstream NVIDIA license notice. Confirm that its
@@ -163,8 +178,12 @@ the file to another project.
 ## Current limitations
 
 - Only one object is tracked at a time.
+- Nothing yet consumes the published `detected_object` transform; it is not
+  wired into the planner.
 - Camera intrinsics, depth scale, network address, and external dependency
   path are currently machine-specific.
+- The robot-side `image_server.py` (including its depth-alignment patch)
+  exists only on the robot; there is no copy in this repository.
 - Models and weights are not included in this repository.
 - Hardware and ROS integration require the configured robot environments and
   are not covered by automated tests.
