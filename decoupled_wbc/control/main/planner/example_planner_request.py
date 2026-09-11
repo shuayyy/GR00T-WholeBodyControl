@@ -1,20 +1,20 @@
-import os
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import time
 
-import numpy as np
 import mujoco
+import numpy as np
 import rclpy
 import tyro
 
+from decoupled_wbc.control.main.planner.simulation.robot import G1Up
 from decoupled_wbc.control.main.planner.utils.demo_trajectory import (
     load_planning_trajectory,
 )
 from decoupled_wbc.control.main.planner.utils.ros_utils import (
     ROSDictServiceClient,
 )
-from decoupled_wbc.control.main.planner.simulation.robot import G1Up
 
 PLANNER_PLAN_SERVICE = "PlannerServer/plan"
 PLANNER_DIR = Path(__file__).resolve().parent
@@ -105,19 +105,13 @@ def report_path_diagnostics(client, path, start, goal, reference):
     segment_lengths = np.linalg.norm(np.diff(path, axis=0), axis=1)
     path_length = float(np.sum(segment_lengths))
     nearest_reference_distance = np.asarray(
-        [
-            np.min(np.linalg.norm(reference - waypoint, axis=1))
-            for waypoint in path
-        ],
+        [np.min(np.linalg.norm(reference - waypoint, axis=1)) for waypoint in path],
         dtype=np.float64,
     )
     reference_cost = float(
         np.sum(
             0.5
-            * (
-                nearest_reference_distance[:-1]
-                + nearest_reference_distance[1:]
-            )
+            * (nearest_reference_distance[:-1] + nearest_reference_distance[1:])
             * segment_lengths
         )
     )
@@ -138,20 +132,11 @@ def report_path_diagnostics(client, path, start, goal, reference):
 
 
 def main(config):
-    if (
-        not np.isfinite(config.planner_frequency)
-        or config.planner_frequency <= 0
-    ):
+    if not np.isfinite(config.planner_frequency) or config.planner_frequency <= 0:
         raise ValueError("planner_frequency must be > 0")
-    if (
-        not np.isfinite(config.initial_transition_time)
-        or config.initial_transition_time < 0
-    ):
+    if not np.isfinite(config.initial_transition_time) or config.initial_transition_time < 0:
         raise ValueError("initial_transition_time must be >= 0")
-    if (
-        not np.isfinite(config.execution_margin)
-        or config.execution_margin < 0
-    ):
+    if not np.isfinite(config.execution_margin) or config.execution_margin < 0:
         raise ValueError("execution_margin must be >= 0")
 
     goal_type = "upper_body"  # "upper_body", "bimanual", "left", "right"
@@ -169,9 +154,7 @@ def main(config):
     # that would start a second node + background spin and abort on shutdown.
     if not rclpy.ok():
         rclpy.init()
-    client = ROSDictServiceClient(
-        PLANNER_PLAN_SERVICE, node_name="ExamplePlannerRequest"
-    )
+    client = ROSDictServiceClient(PLANNER_PLAN_SERVICE, node_name="ExamplePlannerRequest")
     try:
         req = {
             "goal_qpos": goal,
@@ -181,19 +164,15 @@ def main(config):
         }
         res = client.call(req)
         client.get_logger().info(f"Planner response: {res}")
-        report_path_diagnostics(
-            client, res["qpos"], start, goal, reference
-        )
+        report_path_diagnostics(client, res["qpos"], start, goal, reference)
         if config.wait_for_execution and res.get("executed", False):
             execution_time = (
                 config.initial_transition_time
-                + max(0, int(res["num_waypoints"]) - 1)
-                / config.planner_frequency
+                + max(0, int(res["num_waypoints"]) - 1) / config.planner_frequency
                 + config.execution_margin
             )
             client.get_logger().info(
-                "Waiting approximately "
-                f"{execution_time:.2f}s for trajectory execution"
+                "Waiting approximately " f"{execution_time:.2f}s for trajectory execution"
             )
             time.sleep(execution_time)
     except KeyboardInterrupt:

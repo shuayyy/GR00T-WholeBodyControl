@@ -51,7 +51,9 @@ def load_planning_trajectory(path_value: str, base_dir: Optional[Path] = None) -
         raise ValueError(f"{path}: trajectory must be a .npz or .npy file")
 
     if trajectory.ndim != 2 or trajectory.shape[1] != len(JOINT_NAMES_UP):
-        raise ValueError(f"{path}: expected shape (N, {len(JOINT_NAMES_UP)}), got {trajectory.shape}")
+        raise ValueError(
+            f"{path}: expected shape (N, {len(JOINT_NAMES_UP)}), got {trajectory.shape}"
+        )
     if trajectory.shape[0] < 2:
         raise ValueError(f"{path}: trajectory needs at least two frames")
     if not np.isfinite(trajectory).all():

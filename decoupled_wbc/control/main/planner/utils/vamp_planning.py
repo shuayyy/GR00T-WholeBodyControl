@@ -1,13 +1,16 @@
-import numpy as np
 import time
 
-import vamp
-from vamp import Sphere, Cuboid, Cylinder
-import ompl.geometric as og
+import numpy as np
 import ompl.base as ob
+import ompl.geometric as og
+import vamp
+from vamp import Cuboid, Cylinder, Sphere
 
-from decoupled_wbc.control.main.planner.utils.ompl_planning import RightGoal
-from decoupled_wbc.control.main.planner.utils.ompl_planning import SimilarityObjective, RefStateSampler
+from decoupled_wbc.control.main.planner.utils.ompl_planning import (
+    RefStateSampler,
+    RightGoal,
+    SimilarityObjective,
+)
 
 
 class VampStateSpace(ob.RealVectorStateSpace):
@@ -26,9 +29,7 @@ class VampStateSpace(ob.RealVectorStateSpace):
 
 
 class VampStateValidityChecker(ob.StateValidityChecker):
-    def __init__(
-        self, si: ob.SpaceInformation, env: vamp.Environment, robot: vamp.robot
-    ):
+    def __init__(self, si: ob.SpaceInformation, env: vamp.Environment, robot: vamp.robot):
         super().__init__(si)
         self.env = env
         self.robot = robot
@@ -40,9 +41,7 @@ class VampStateValidityChecker(ob.StateValidityChecker):
 
 
 class VampMotionValidator(ob.MotionValidator):
-    def __init__(
-        self, si: ob.SpaceInformation, env: vamp.Environment, robot: vamp.robot
-    ):
+    def __init__(self, si: ob.SpaceInformation, env: vamp.Environment, robot: vamp.robot):
         super().__init__(si)
         self.env = env
         self.robot = robot
@@ -80,9 +79,7 @@ class OMPLVAMPPlanner:
 
         # Set VAMP-based validators
         motion_validator = VampMotionValidator(self.si, self.env, robot)
-        state_validity_checker = VampStateValidityChecker(
-            self.si, self.env, robot
-        )
+        state_validity_checker = VampStateValidityChecker(self.si, self.env, robot)
         self.si.setMotionValidator(motion_validator)
         self.si.setStateValidityChecker(state_validity_checker)
 
@@ -191,9 +188,7 @@ class OMPLVAMPPlanner:
                         ps.shortcutPath(path)
                 ps.smoothBSpline(path)
             states = path.getStates()
-            waypoints = np.array(
-                [[s[i] for i in range(self.n_dof)] for s in states]
-            )
+            waypoints = np.array([[s[i] for i in range(self.n_dof)] for s in states])
 
         # TEMP
         # self.ss.clear()
@@ -293,9 +288,7 @@ class VAMPPlanner:
         # Solve
         t1 = time.perf_counter()
         waypoints = np.array([start])
-        result = self.planner_func(
-            start, goal, self.env, self.plan_settings, self.sampler
-        )
+        result = self.planner_func(start, goal, self.env, self.plan_settings, self.sampler)
         t2 = time.perf_counter()
         print(f"Planning Time: {t2 - t1} seconds")
 

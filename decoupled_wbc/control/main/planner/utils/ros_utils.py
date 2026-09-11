@@ -5,10 +5,9 @@ from __future__ import annotations
 import base64
 from typing import Callable, Optional
 
+from diagnostic_msgs.srv import AddDiagnostics
 import msgpack
 import msgpack_numpy as mnp
-import rclpy
-from diagnostic_msgs.srv import AddDiagnostics
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 

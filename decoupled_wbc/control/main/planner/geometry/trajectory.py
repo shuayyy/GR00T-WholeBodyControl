@@ -99,10 +99,7 @@ class SplineTrajectory(Trajectory):
     def time_check(self, time: float) -> bool:
         """Check if the given time is within bounds"""
         if time < 0 or time > self.end_time:
-            print(
-                f"Time {time} outside bounds [0, {self.end_time}]. "
-                + f"Clipping it to bounds."
-            )
+            print(f"Time {time} outside bounds [0, {self.end_time}]. " + "Clipping it to bounds.")
         time = np.clip(time, 0, self.end_time)
         return time
 
@@ -130,9 +127,7 @@ class TOPPRATrajectory(Trajectory):
         pc_vel = ta.constraint.JointVelocityConstraint(vel)
         pc_acc = ta.constraint.JointAccelerationConstraint(acc)
 
-        instance = ta.algorithm.TOPPRA(
-            [pc_vel, pc_acc], path, parametrizer="ParametrizeSpline"
-        )
+        instance = ta.algorithm.TOPPRA([pc_vel, pc_acc], path, parametrizer="ParametrizeSpline")
         if (jnt_traj := instance.compute_trajectory()) is not None:
             self.trajectory = jnt_traj
         else:
@@ -161,9 +156,6 @@ class TOPPRATrajectory(Trajectory):
     def time_check(self, time: float) -> bool:
         """Check if the given time is within bounds"""
         if time < 0 or time > self.end_time:
-            print(
-                f"Time {time} outside bounds [0, {self.end_time}]. "
-                + f"Clipping it to bounds."
-            )
+            print(f"Time {time} outside bounds [0, {self.end_time}]. " + "Clipping it to bounds.")
         time = np.clip(time, 0, self.end_time)
         return time

@@ -262,11 +262,21 @@ planner_wbc/
 /decoupled_wbc/control/main/planner/utils/com_stability.py
 /decoupled_wbc/control/main/planner/utils/stable_ompl_planning.py
 
-# experiment reports (videos, recordings, tables) - on disk only
-report/
+# experiment reports: tables and recordings are tracked, renders are not
+/report/**/*.mp4
 decoupled_wbc/control/main/planner/TODO.md
 
 # unused planning scenes (kept on disk)
 /decoupled_wbc/control/main/planner/simulation/envs/g1_all.xml
 /decoupled_wbc/control/main/planner/simulation/envs/g1_table_airbox.xml
 /decoupled_wbc/control/main/planner/simulation/envs/components/airbox.xml
+
+# obstacle experiments: generated scenes, renders and plans (obstacle_lab.py / obstacle_plan.py)
+/obstacles/
+
+# result renders (regenerate with test/render_traj.py, then ffmpeg for the gifs)
+/gif/
+/sim_test_final/**/*.mp4
+/real/**/*.mp4
+ppt/
+report/

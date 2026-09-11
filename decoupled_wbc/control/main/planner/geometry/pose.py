@@ -1,7 +1,7 @@
 from __future__ import annotations
+
 import numpy as np
-from scipy.spatial.transform import Rotation as R
-from scipy.spatial.transform import Slerp
+from scipy.spatial.transform import Rotation as R, Slerp
 
 
 class Pose:
@@ -62,9 +62,7 @@ class Pose:
     def matrix(self) -> np.ndarray:
         """Return the 4x4 homogeneous matrix representation of the pose"""
         r = R.from_quat(wxyz_to_xyzw(self.rotation))
-        return np.block(
-            [[r.as_matrix(), self.position[:, None]], [0, 0, 0, 1]]
-        )
+        return np.block([[r.as_matrix(), self.position[:, None]], [0, 0, 0, 1]])
 
     def __matmul__(self, other: Pose) -> Pose:
         """
@@ -94,9 +92,7 @@ class Pose:
         # position should be close
         # rotation should be close to other's quat or -quat
         pos_close = np.allclose(ap, bp, atol=threshold)
-        ori_close = np.allclose(ao, bo, atol=threshold) or np.allclose(
-            ao, -bo, atol=threshold
-        )
+        ori_close = np.allclose(ao, bo, atol=threshold) or np.allclose(ao, -bo, atol=threshold)
         return pos_close and ori_close
 
     def distance(self, other: Pose) -> tuple[float, float]:
@@ -157,17 +153,13 @@ class SE2Pose(Pose):
         position, euler = self.to_se3(position, rotation)
         super().__init__(position, euler)
 
-    def to_se2(
-        self, position: np.ndarray, euler: np.ndarray
-    ) -> tuple[np.ndarray, float]:
+    def to_se2(self, position: np.ndarray, euler: np.ndarray) -> tuple[np.ndarray, float]:
         """Return SE2 position and euler from a SE3 position and euler"""
         position = position[:2]
         euler = euler[2]
         return position, euler
 
-    def to_se3(
-        self, position: np.ndarray, euler: float
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def to_se3(self, position: np.ndarray, euler: float) -> tuple[np.ndarray, np.ndarray]:
         """Return SE3 position and euler from a SE2 position and euler"""
         position = np.array([position[0], position[1], 0])
         euler = np.array([0.0, 0.0, euler])
@@ -197,9 +189,7 @@ class SE2Pose(Pose):
         """Return the 3x3 homogeneous matrix representation of the pose"""
         position, euler = self.to_se2(self.position, self.euler)
         r = R.from_euler("z", euler)
-        return np.block(
-            [[r.as_matrix()[:2, :2], position[:, None]], [0, 0, 1]]
-        )
+        return np.block([[r.as_matrix()[:2, :2], position[:, None]], [0, 0, 1]])
 
     def __matmul__(self, other: SE2Pose) -> SE2Pose:
         """SE2Pose multiplication"""

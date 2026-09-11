@@ -1,10 +1,14 @@
 """PhaseRRTstar over the upper-body joints: plans in (q, alpha), alpha being the
 phase along a reference trajectory."""
 
+import warnings
+
 import numpy as np
 import ompl.base as ob
 import ompl.geometric as og
 import ompl.util as ou
+
+from .trajectory_ops import smooth_valid
 
 
 def phase_defaults(arclength):
@@ -42,9 +46,16 @@ class PhaseRRTstarPlanner:
         rewire_factor=1.0,
         phase_params=None,
         log=True,
+        validation_robot=None,
     ):
+        """``validation_robot``: robot in the scene the smoothed path is checked
+        against.  Planning may run against inflated obstacles so the tree keeps a
+        margin; smoothing then pulls the path toward the demonstration and uses
+        some of that margin, which is only acceptable if the result is checked
+        against the real geometry.  None means the planning robot is used."""
         self.name = "PhaseRRTstar"
         self.robot = robot
+        self.validation_robot = validation_robot if validation_robot is not None else robot
         self.model = robot.model
         self.n_dof = robot.n_joints
         self.joint_limits = robot.joint_limits
@@ -53,9 +64,7 @@ class PhaseRRTstarPlanner:
 
         self.reference = np.asarray(reference, dtype=float)
         if self.reference.ndim != 2 or self.reference.shape[1] != self.n_dof:
-            raise ValueError(
-                f"reference must be (N, {self.n_dof}), got {self.reference.shape}"
-            )
+            raise ValueError(f"reference must be (N, {self.n_dof}), got {self.reference.shape}")
         if self.reference.shape[0] < 2:
             raise ValueError("reference needs at least two waypoints")
 
@@ -70,6 +79,7 @@ class PhaseRRTstarPlanner:
         self.pdef = self.ss.getProblemDefinition()
         self.planner = self.ss.getPlanner()
         self.last_plan_stats = {}
+        self.smooth_s_factor = None  # set by plan() when smooth_path applies
 
     def set_up_ompl(self):
         """Compound ``(q, alpha)`` space; alpha is the last dimension."""
@@ -121,6 +131,13 @@ class PhaseRRTstarPlanner:
         ss.setPlanner(planner)
         return ss, si
 
+    def _joints_valid(self, q) -> bool:
+        """Collision-free at joint configuration ``q`` in the validation scene (no
+        bounds check: the spline is fitted through in-bounds points and stays
+        within them)."""
+        self.validation_robot.set_joint_qpos(np.asarray(q, dtype=float))
+        return not self.validation_robot.in_contact()
+
     def validity_checker(self, state):
         """Joint bounds and collision."""
         joints = state[0]
@@ -140,7 +157,12 @@ class PhaseRRTstarPlanner:
         shortcut_path=False,
     ):
         """Plan from start to goal; returns (N, n_dof) waypoints.
-        Path simplification is ignored (it would break the monotone alpha)."""
+        ``smooth_path`` fits a cubic smoothing spline through the joint path and
+        blends any colliding sample back toward the raw polyline, falling back to
+        the raw path if no tolerance yields a valid curve
+        (``trajectory_ops.smooth_valid``).  ``shortcut_path`` is ignored, since
+        shortening pulls the path off the demonstration, which is the whole point
+        of this planner."""
         if goal_type != "upper_body":
             raise ValueError(
                 f"PhaseRRTstar only supports goal_type 'upper_body', got '{goal_type}'"
@@ -159,9 +181,7 @@ class PhaseRRTstarPlanner:
                 joints[i] = float(q[i])
         start_state[1][0] = 0.0
         goal_state[1][0] = 1.0
-        self.ss.setStartAndGoalStates(
-            start_state, goal_state, float(self.params["goal_threshold"])
-        )
+        self.ss.setStartAndGoalStates(start_state, goal_state, float(self.params["goal_threshold"]))
 
         self.ss.setup()
         status = self.ss.solve(float(timeout))
@@ -170,11 +190,37 @@ class PhaseRRTstarPlanner:
         waypoints = np.array([start])
         alphas = np.zeros(1)
         if status_str == "Exact solution":
-            states = self.ss.getSolutionPath().getStates()
-            waypoints = np.array(
-                [[s[0][i] for i in range(self.n_dof)] for s in states], dtype=float
-            )
-            alphas = np.array([s[1][0] for s in states], dtype=float)
+            solution = self.ss.getSolutionPath()
+
+            def read(path_obj):
+                st = path_obj.getStates()
+                return (
+                    np.array([[s[0][i] for i in range(self.n_dof)] for s in st], dtype=float),
+                    np.array([s[1][0] for s in st], dtype=float),
+                )
+
+            waypoints, alphas = read(solution)
+            if smooth_path:
+                # OMPL's own smoother, kept for reference.  It nudges polyline
+                # vertices and only halved the worst corner (96 -> 78 deg); the
+                # spline below replaces the polyline with a curve (96 -> 12 deg).
+                # raw = (waypoints, alphas)
+                # og.PathSimplifier(self.si).smoothBSpline(solution)
+                # waypoints, alphas = read(solution)
+                # if not np.all(np.diff(alphas) >= -1e-9):
+                #     waypoints, alphas = raw  # smoothing broke the monotone phase
+                # The raw plan may graze an obstacle at the validity tolerance, and
+                # the spline moves the path by a few mm, so a handful of samples can
+                # end up just inside.  Those samples are blended back toward the raw
+                # polyline (valid by construction) until they clear; the rest of the
+                # curve keeps its smoothness.  Strongest fit first.
+                smoothed, self.smooth_s_factor = smooth_valid(waypoints, self._joints_valid)
+                if smoothed is not None:
+                    waypoints = smoothed
+                else:
+                    warnings.warn(
+                        "PhaseRRTstar: no smoothing factor clears the scene; raw path kept"
+                    )
 
         self.last_plan_stats = {
             "status": status_str,

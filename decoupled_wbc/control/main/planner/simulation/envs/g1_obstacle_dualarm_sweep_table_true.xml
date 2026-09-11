@@ -1,0 +1,15 @@
+<mujoco model="g1_obstacle_dualarm_sweep_table">
+  <compiler angle="radian" autolimits="true"/>
+  <visual><global offwidth="1280" offheight="960"/></visual>
+  <include file="components/floor.xml"/>
+  <include file="components/g1.xml"/>
+  <include file="components/table_dualarm_sweep_table.xml"/>
+  <worldbody>
+    <body name="obstacle" pos="0.266916 -0.225295 0.794420">
+      <geom name="obstacle_visual" type="box" size="0.015000 0.015000 0.094420"
+            rgba="0.85 0.25 0.2 1" contype="0" conaffinity="0" group="0"/>
+      <geom name="obstacle" type="box" size="0.015000 0.015000 0.094420"
+            rgba="0.85 0.25 0.2 1" contype="1" conaffinity="1" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>

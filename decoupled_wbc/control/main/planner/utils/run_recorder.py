@@ -3,10 +3,10 @@ its metrics.  ``RECORDING_FORMAT`` documents the npz."""
 
 from __future__ import annotations
 
+from pathlib import Path
 import threading
 import time
 import traceback
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -71,8 +71,12 @@ class RunRecorder:
                 "plan_qpos": np.asarray(plan_qpos, dtype=np.float32),
                 "start_t": time.monotonic(),
                 "stream_start_t": None,
-                "t": [], "q": [], "base_pose": [],
-                "goal_t": [], "goal_pose": [], "goal_target_time": [],
+                "t": [],
+                "q": [],
+                "base_pose": [],
+                "goal_t": [],
+                "goal_pose": [],
+                "goal_target_time": [],
             }
 
     def on_state(self, q: np.ndarray, base_pose: np.ndarray) -> None:

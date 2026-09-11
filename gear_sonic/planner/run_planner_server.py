@@ -6,18 +6,18 @@ Plans on request and streams the result to the C++ deploy's ``pose`` topic
 
 from __future__ import annotations
 
+from pathlib import Path
 import threading
 import time
 import traceback
-from pathlib import Path
 from typing import Optional
 
 import msgpack
 import msgpack_numpy as mnp
 import numpy as np
+from scipy.spatial.transform import Rotation, Slerp
 import tyro
 import zmq
-from scipy.spatial.transform import Rotation, Slerp
 
 from gear_sonic.planner.configs import DEPLOY_FPS, ServerConfig
 from gear_sonic.planner.joint_orders import name_permutation
@@ -495,7 +495,6 @@ class PlannerService:
             # execute:true fire-and-move behavior caused a step command
             # whenever the robot was not at the plan's start).
             self._stored = frames
-            execute = False
 
             response = {
                 "ok": True,

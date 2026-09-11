@@ -18,7 +18,7 @@ ramp up  ->  execute  ->  save recording + metrics  ->  ramp down
 ```
 
 - **ramp up**: from wherever the arms are to the plan's first waypoint, smoothstep.
-- **execute**: the plan at 0.5 rad/s (0.025 rad x 20 Hz).
+- **execute**: the plan at 0.5 rad/s (0.025 rad x 20 Hz). The plan is B-spline smoothed before it is resampled (default; `--no-smooth-path` to get the raw polyline).
 - **save**: `Saved recording ...` and the metrics print. The return motion is not part of the data.
 - **ramp down**: back to the pose the arms were in before the ramp up.
 
@@ -62,6 +62,7 @@ PC on the Unitree network: `ping 192.168.123.164`.
 Terminal 1. The arms stay where they are at launch (the policy is seeded from the measured pose).
 Press `]` only; there is no `9` on hardware. `]` starts the balance policy and glides the arms
 to the default pose (arms down) over 5 s; wait for that to finish, then lower the robot to the floor.
+The planner's ramps use the same 5 s, and the execution speed is 0.5 rad/s, identical to simulation.
 
 ```bash
 python decoupled_wbc/control/main/planner/run_g1_control_loop.py --interface real
@@ -73,11 +74,11 @@ Check state is flowing (about 50 Hz):
 ros2 topic hz /G1Env/env_state_act
 ```
 
-Terminal 2. Headless PC, 8 s ramps, and half speed for the first run:
+Terminal 2. Headless PC. Speed and ramps are the same as in simulation, no flags:
 
 ```bash
 python decoupled_wbc/control/main/planner/run_planner_server.py \
-    --no-visualize-planning --initial-transition-time 8 --max-joint-step 0.01 \
+    --no-visualize-planning \
     --use-reference --reference-trajectory-path dataset/ICRA/pour/traj.npz \
     --planning-timeout 30 --ompl-planner PhaseRRTstar
 ```
@@ -94,8 +95,6 @@ Then the real request, and answer the three prompts in terminal 2 while watching
 ```bash
 python decoupled_wbc/control/main/planner/example_planner_request.py --trajectory-path dataset/ICRA/pour/traj.npz
 ```
-
-Once a run is clean, drop `--max-joint-step 0.01` to get the 0.5 rad/s used for all simulation results.
 
 ## Rules while it runs
 
@@ -118,3 +117,4 @@ Once a run is clean, drop `--max-joint-step 0.01` to get the 0.5 rad/s used for 
 - The three waist joints in the tracking error measure the balance policy, which owns the waist, not the arm controller.
 - Every goal sets the 14 finger joints to the controller default (open). Do not hold an object.
 - The planning scene is `g1_free.xml`, no obstacles. With a real table use `--planning-xml simulation/envs/g1_table.xml` and check its position; it sits 10 cm further back than the lab scan.
+- Obstacle scenes need three extra flags: `--validation-xml simulation/envs/g1_obstacle_<x>_true.xml` (the smoothed path is checked against the real obstacle, planning runs against the 10 mm-inflated one), `--phase-sigma-scale 10` (the default sampling width cannot find a detour) and `--validity-resolution 0.002`. Expect the robot to still touch the obstacle: the controller lags ~40 mm and no margin that fits the demo's goal covers that.

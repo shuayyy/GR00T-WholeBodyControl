@@ -1,14 +1,19 @@
-import os, sys
+import os
+import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time
-import numpy as np
+
 import mujoco
 import mujoco.viewer
-
-from simulation.mujoco_utils import joint_names_to_joint_ids
-from simulation.mujoco_utils import joints_to_limits, joints_to_qpos_dof_ids
-from simulation.mujoco_utils import get_geoms_from_group, geoms_in_contact
+import numpy as np
+from simulation.mujoco_utils import (
+    geoms_in_contact,
+    get_geoms_from_group,
+    joint_names_to_joint_ids,
+    joints_to_limits,
+    joints_to_qpos_dof_ids,
+)
 
 # Upper-body planning DOFs for the fixed-base G1 planning model (waist + arms).
 JOINT_NAMES_LEFT = [
@@ -115,14 +120,15 @@ class MujocoRobot:
     def set_base_pose(self, pos, quat_wxyz):
         """Place a floating base; requires a free joint in the model."""
         free = [
-            j for j in range(self.model.njnt)
+            j
+            for j in range(self.model.njnt)
             if self.model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE
         ]
         if not free:
             raise ValueError("model has no free joint to place the base with")
         adr = self.model.jnt_qposadr[free[0]]
-        self.data.qpos[adr:adr + 3] = np.asarray(pos, dtype=float)
-        self.data.qpos[adr + 3:adr + 7] = np.asarray(quat_wxyz, dtype=float)
+        self.data.qpos[adr : adr + 3] = np.asarray(pos, dtype=float)
+        self.data.qpos[adr + 3 : adr + 7] = np.asarray(quat_wxyz, dtype=float)
         mujoco.mj_forward(self.model, self.data)
 
     def set_fixed_qpos(self, fixed_qpos):
@@ -136,9 +142,7 @@ class MujocoRobot:
 
     def get_ee_pose(self, idx=0):
         """Get end-effector pose"""
-        ee_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_SITE, self.ee_names[idx]
-        )
+        ee_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, self.ee_names[idx])
         pos = self.data.site_xpos[ee_id]
         mat = self.data.site_xmat[ee_id]
         quat = np.zeros(4, dtype=float)
@@ -147,9 +151,7 @@ class MujocoRobot:
 
     def in_contact(self, verbose=False):
         """Check if the robot is in contact with the environment"""
-        in_contact = geoms_in_contact(
-            self.model, self.data, self.robot_geoms, 1e-3, verbose
-        )
+        in_contact = geoms_in_contact(self.model, self.data, self.robot_geoms, 1e-3, verbose)
         return in_contact
 
     def get_robot_geoms(self, geom_group):
@@ -158,9 +160,7 @@ class MujocoRobot:
 
     def teleport_base(self, pos=[0.0, 0.0, 0.0], quat=[1.0, 0.0, 0.0, 0.0]):
         """Teleport the robot base to the given position and orientation"""
-        bid = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_BODY, self.root_link
-        )
+        bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, self.root_link)
         if bid < 0:
             raise ValueError(f"unknown body root: '{self.root_link}'")
 
@@ -213,9 +213,7 @@ class G1Up(MujocoRobot):
     HOME_POS[[4, 11]] = (0.2, -0.2)
     HOME_POS[[6, 13]] = (1.5708, 1.5708)
 
-    def __init__(
-        self, model, data=None, visualize=False, fixed_qpos=None, base_pose=None
-    ):
+    def __init__(self, model, data=None, visualize=False, fixed_qpos=None, base_pose=None):
         """fixed_qpos: non-planned joints by name; base_pose: (pos, quat_wxyz)."""
         MujocoRobot.__init__(
             self,

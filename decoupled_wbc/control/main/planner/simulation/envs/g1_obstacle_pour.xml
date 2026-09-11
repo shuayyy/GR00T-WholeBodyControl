@@ -1,0 +1,14 @@
+<mujoco model="g1_obstacle_pour">
+  <compiler angle="radian" autolimits="true"/>
+  <visual><global offwidth="1280" offheight="960"/></visual>
+  <include file="components/floor.xml"/>
+  <include file="components/g1.xml"/>
+  <worldbody>
+    <body name="obstacle" pos="0.22690981241718924 -0.10803814841350279 1.2054609027349759">
+      <geom name="obstacle_visual" type="box" size="0.025 0.025 0.025"
+            rgba="0.85 0.25 0.2 1" contype="0" conaffinity="0" group="0"/>
+      <geom name="obstacle" type="box" size="0.025 0.025 0.025"
+            rgba="0.85 0.25 0.2 1" contype="1" conaffinity="1" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>

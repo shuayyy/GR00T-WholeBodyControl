@@ -81,9 +81,7 @@ def main(config: ControlLoopConfig):
             raise ValueError("direct_waist_control requires enable_waist=True")
         waist_location = "upper_body"
     else:
-        waist_location = (
-            "lower_and_upper_body" if config.enable_waist else "lower_body"
-        )
+        waist_location = "lower_and_upper_body" if config.enable_waist else "lower_body"
     robot_model = instantiate_g1_robot_model(
         waist_location=waist_location, high_elbow_pose=config.high_elbow_pose
     )
@@ -102,9 +100,7 @@ def main(config: ControlLoopConfig):
     first_obs = wait_for_first_observation(env, timeout_s=10.0)
     robot_model.set_initial_body_pose(np.array(first_obs["q"], dtype=np.float64))
 
-    wbc_policy = get_wbc_policy(
-        "g1", robot_model, wbc_config, init_time=time.monotonic()
-    )
+    wbc_policy = get_wbc_policy("g1", robot_model, wbc_config, init_time=time.monotonic())
 
     keyboard_listener_pub = KeyboardListenerPublisher()
     keyboard_estop = KeyboardEStop()
@@ -151,7 +147,7 @@ def main(config: ControlLoopConfig):
 
                     t_now = time.monotonic()
 
-                    # `wbc_goal` - desired target/state request 
+                    # `wbc_goal` - desired target/state request
                     # `wbc_action` - full-body command
                     wbc_goal = {}
                     if upper_body_cmd:
@@ -242,9 +238,7 @@ def main(config: ControlLoopConfig):
                             "base_height_command": last_cmd.get(
                                 "base_height_command", DEFAULT_BASE_HEIGHT
                             ),
-                            "navigate_command": last_cmd.get(
-                                "navigate_cmd", DEFAULT_NAV_CMD
-                            ),
+                            "navigate_command": last_cmd.get("navigate_cmd", DEFAULT_NAV_CMD),
                             "timestamps": {
                                 "main_loop": time.time(),
                                 "proprio": time.time(),

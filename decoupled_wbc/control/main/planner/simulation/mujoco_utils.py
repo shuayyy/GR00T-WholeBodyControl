@@ -53,9 +53,7 @@ def joint_type_sizes(joint_type: mujoco.mjtJoint) -> tuple[int, int]:
     raise ValueError(f"Unknown joint type {joint_type}")
 
 
-def joint_names_to_joint_ids(
-    model: mujoco.MjModel, joint_names: list[str]
-) -> np.ndarray:
+def joint_names_to_joint_ids(model: mujoco.MjModel, joint_names: list[str]) -> np.ndarray:
     """Return array of joint ids for the given joint names"""
     ids = []
     for name in joint_names:
@@ -117,9 +115,7 @@ def get_geoms_from_group(
         in_subtree = [True] * model.nbody
     else:
         # Get the root body id
-        root_body_id = mujoco.mj_name2id(
-            model, mujoco.mjtObj.mjOBJ_BODY, root_link
-        )
+        root_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, root_link)
         if root_body_id < 0:
             raise ValueError(f"Root body '{root_link}' not found")
 
@@ -151,16 +147,10 @@ def geoms_in_contact(
     for i in range(data.ncon):
         c = data.contact[i]
 
-        if c.dist < -tolerance and (
-            c.geom1 in geoms_ids or c.geom2 in geoms_ids
-        ):
+        if c.dist < -tolerance and (c.geom1 in geoms_ids or c.geom2 in geoms_ids):
             if verbose:
-                g1 = mujoco.mj_id2name(
-                    model, mujoco.mjtObj.mjOBJ_GEOM, c.geom1
-                )
-                g2 = mujoco.mj_id2name(
-                    model, mujoco.mjtObj.mjOBJ_GEOM, c.geom2
-                )
+                g1 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, c.geom1)
+                g2 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, c.geom2)
                 print(f"contact {i}: {g1}, {g2} with distance {c.dist}")
             return True
 

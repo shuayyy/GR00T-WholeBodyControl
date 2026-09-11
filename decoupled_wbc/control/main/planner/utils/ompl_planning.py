@@ -1,12 +1,14 @@
-import numpy as np
-import mujoco
-from scipy.interpolate import make_interp_spline
+import warnings
 
+import mujoco
+import numpy as np
 import ompl.base as ob
 import ompl.geometric as og
 import ompl.util as ou
-
+from scipy.interpolate import make_interp_spline
 from simulation.robot import MujocoRobot
+
+from .trajectory_ops import smooth_valid
 
 
 class OMPLGeometricPlanner:
@@ -22,11 +24,16 @@ class OMPLGeometricPlanner:
         extend_range: float | None = 0.05,
         log: bool = True,
         reference: np.ndarray | None = None,
+        validation_robot: MujocoRobot | None = None,
     ):
         """``reference``: demo joint path (N, n_dof) that ``plan`` uses for the
-        reference-biased sampler and similarity cost unless overridden per call."""
+        reference-biased sampler and similarity cost unless overridden per call.
+        ``validation_robot``: scene the smoothed path is checked against (see
+        PhaseRRTstarPlanner); None means the planning robot."""
         # Mujoco Robot with its model and data
         self.robot = robot
+        self.validation_robot = validation_robot if validation_robot is not None else robot
+        self.smooth_s_factor = None
         self.name = planner
         self.reference = None if reference is None else np.asarray(reference, dtype=float)
         self.model = robot.model
@@ -82,6 +89,11 @@ class OMPLGeometricPlanner:
         planner = getattr(og, self.planner_name)(si)
         ss.setPlanner(planner)
         return ss, si
+
+    def _joints_valid(self, q) -> bool:
+        """Collision-free at ``q`` in the validation scene."""
+        self.validation_robot.set_joint_qpos(np.asarray(q, dtype=float))
+        return not self.validation_robot.in_contact()
 
     def validity_checker(self, state: ob.State):
         """Check if the state is valid
@@ -149,18 +161,27 @@ class OMPLGeometricPlanner:
         if status.asString() == "Exact solution":
             path = self.ss.getSolutionPath()
             objective = self.pdef.getOptimizationObjective()
-            if smooth_path:
+            if smooth_path and shortcut_path:
                 ps = og.PathSimplifier(self.si)
-                if shortcut_path:
-                    try:
-                        ps.ropeShortcutPath(path)
-                    except Exception:
-                        ps.shortcutPath(path)
-                ps.smoothBSpline(path)
+                try:
+                    ps.ropeShortcutPath(path)
+                except Exception:
+                    ps.shortcutPath(path)
             states = path.getStates()
-            waypoints = np.array(
-                [[s[i] for i in range(self.n_dof)] for s in states]
-            )
+            waypoints = np.array([[s[i] for i in range(self.n_dof)] for s in states])
+            if smooth_path:
+                # OMPL's own smoother, kept for reference: it nudges polyline
+                # vertices and only halves the worst corner.  The cubic spline
+                # below replaces the polyline with a curve; same code as PhaseRRT*.
+                # ps = og.PathSimplifier(self.si)
+                # ps.smoothBSpline(path)
+                smoothed, self.smooth_s_factor = smooth_valid(waypoints, self._joints_valid)
+                if smoothed is not None:
+                    waypoints = smoothed
+                else:
+                    warnings.warn(
+                        f"{self.name}: no smoothing factor clears the scene; raw path kept"
+                    )
 
         self.ss.clear()
         return waypoints
@@ -261,9 +282,7 @@ class RefStateSampler(ob.StateSampler):
     def _sample_reference_biased(self, state):
         # Either progress-biased t or globally random t.
         if self.rng.random() < self.p_progress:
-            phase = (self.sample_count % self.progress_period) / float(
-                self.progress_period
-            )
+            phase = (self.sample_count % self.progress_period) / float(self.progress_period)
             t = self.rng.normal(loc=phase, scale=self.progress_sigma)
             t = np.clip(t, 0.0, 1.0)
         else:
@@ -272,9 +291,7 @@ class RefStateSampler(ob.StateSampler):
         x_ref = self._reference_at(t)
 
         # Spatial Gaussian around the spline point.
-        noise = self.rng.normal(
-            loc=0.0, scale=self.spatial_sigma, size=self.dim
-        )
+        noise = self.rng.normal(loc=0.0, scale=self.spatial_sigma, size=self.dim)
         x = x_ref + noise
 
         self._write_vector_to_state(state, x)
@@ -333,9 +350,7 @@ class StateCostIntegralObjective(ob.OptimizationObjective):
                     curr = s2
 
                 curr_cost = self.stateCost(curr)
-                seg_cost = self.trapezoid(
-                    prev_cost, curr_cost, self.si.distance(temp1, curr)
-                )
+                seg_cost = self.trapezoid(prev_cost, curr_cost, self.si.distance(temp1, curr))
                 cost = self.combineCosts(cost, seg_cost)
 
                 if j < nd:
@@ -352,9 +367,7 @@ class StateCostIntegralObjective(ob.OptimizationObjective):
         return cost
 
     def motionCostBestEstimate(self, s1, s2):
-        return self.trapezoid(
-            self.stateCost(s1), self.stateCost(s2), self.si.distance(s1, s2)
-        )
+        return self.trapezoid(self.stateCost(s1), self.stateCost(s2), self.si.distance(s1, s2))
 
     @staticmethod
     def trapezoid(c1, c2, dist):

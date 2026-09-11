@@ -3,11 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import pinocchio as pin
-
 import ompl.base as ob
 import ompl.geometric as og
 import ompl.util as ou
+import pinocchio as pin
 
 from gear_sonic.data.robot_model.robot_model import RobotModel
 from gear_sonic.planner.constraints.com_constraint import (

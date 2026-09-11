@@ -151,7 +151,9 @@ def build_trajectory_runtime(config: TrajectoryConfig, logger) -> TrajectoryRunt
         )
 
     ignored_dataset_joints = [
-        joint_name for joint_name in dataset_joint_names if joint_name not in controller_name_to_index
+        joint_name
+        for joint_name in dataset_joint_names
+        if joint_name not in controller_name_to_index
     ]
     preserved_default_joints = [
         joint_name
@@ -265,7 +267,9 @@ def main(config: TrajectoryConfig):
                 frame_idx += 1
             else:
                 if not hold_final_pose_printed:
-                    logger.info("Reached the final trajectory frame; holding the final trajectory pose.")
+                    logger.info(
+                        "Reached the final trajectory frame; holding the final trajectory pose."
+                    )
                     hold_final_pose_printed = True
                 frame_idx = runtime.qpos.shape[0] - 1
 

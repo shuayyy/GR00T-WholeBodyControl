@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 import os
+from pathlib import Path
 import threading
 import time
 from typing import Optional
 
-import numpy as np
-import rclpy
-import tyro
-import mujoco
 import msgpack
 import msgpack_numpy as mnp
+import mujoco
+import numpy as np
+import rclpy
 from std_msgs.msg import ByteMultiArray
+import tyro
 
 from decoupled_wbc.control.main.constants import (
     CONTROL_GOAL_TOPIC,
@@ -21,8 +21,25 @@ from decoupled_wbc.control.main.constants import (
     STATE_TOPIC_NAME,
 )
 from decoupled_wbc.control.main.planner.configs.configs import PlannerConfig
+from decoupled_wbc.control.main.planner.simulation.robot import (
+    JOINT_NAMES_LEFT,
+    JOINT_NAMES_UP,
+    G1Up,
+)
+from decoupled_wbc.control.main.planner.utils.controller_interface import (
+    build_controller_interface,
+    full_q_to_planning_qpos,
+    planning_qpos_to_controller_pose,
+)
+from decoupled_wbc.control.main.planner.utils.demo_trajectory import load_planning_trajectory
+from decoupled_wbc.control.main.planner.utils.planner_factory import make_planner
 from decoupled_wbc.control.main.planner.utils.ros_utils import (
     ROSDictServiceServer,
+)
+from decoupled_wbc.control.main.planner.utils.run_recorder import RunRecorder
+from decoupled_wbc.control.main.planner.utils.trajectory_ops import (
+    resample_waypoints,
+    smoothstep_ramp,
 )
 from decoupled_wbc.control.robot_model.instantiation.g1 import (
     instantiate_g1_robot_model,
@@ -32,24 +49,6 @@ from decoupled_wbc.control.utils.ros_utils import (
     ROSMsgPublisher,
     ROSMsgSubscriber,
 )
-from decoupled_wbc.control.main.planner.utils.controller_interface import (
-    build_controller_interface,
-    full_q_to_planning_qpos,
-    planning_qpos_to_controller_pose,
-)
-from decoupled_wbc.control.main.planner.utils.demo_trajectory import load_planning_trajectory
-from decoupled_wbc.control.main.planner.utils.planner_factory import make_planner
-from decoupled_wbc.control.main.planner.utils.run_recorder import RunRecorder
-from decoupled_wbc.control.main.planner.utils.trajectory_ops import (
-    resample_waypoints,
-    smoothstep_ramp,
-)
-from decoupled_wbc.control.main.planner.simulation.robot import (
-    G1Up,
-    JOINT_NAMES_UP,
-    JOINT_NAMES_LEFT,
-)
-
 
 PLANNER_DIR = Path(__file__).resolve().parent
 PLANNER_NODE_NAME = "PlannerServer"
@@ -81,29 +80,21 @@ def parse_plan_request(
       - execute_immediately: optional bool; if true, stream path to the control loop
     """
     goal_type = str(request.get("goal_type", default_goal_type))
-    execute_immediately = bool(
-        request.get("execute_immediately", default_execute_immediately)
-    )
+    execute_immediately = bool(request.get("execute_immediately", default_execute_immediately))
 
     if "goal_qpos" in request:
         goal = np.asarray(request["goal_qpos"], dtype=np.float32).reshape(-1)
         if goal.shape[0] != len(JOINT_NAMES_UP):
-            raise ValueError(
-                f"goal_qpos length {goal.shape[0]} != {len(JOINT_NAMES_UP)}"
-            )
+            raise ValueError(f"goal_qpos length {goal.shape[0]} != {len(JOINT_NAMES_UP)}")
     else:
         raise KeyError("Plan request must include goal_qpos")
 
     start = None
     if "start_qpos" in request:
         if request["start_qpos"] is not None:
-            start = np.asarray(
-                request["start_qpos"], dtype=np.float32
-            ).reshape(-1)
+            start = np.asarray(request["start_qpos"], dtype=np.float32).reshape(-1)
             if start.shape[0] != len(JOINT_NAMES_UP):
-                raise ValueError(
-                    f"start_qpos length {start.shape[0]} != {len(JOINT_NAMES_UP)}"
-                )
+                raise ValueError(f"start_qpos length {start.shape[0]} != {len(JOINT_NAMES_UP)}")
     return goal, start, goal_type, execute_immediately
 
 
@@ -145,6 +136,13 @@ class PlannerServer:
             fixed_qpos=fixed_qpos,
             base_pose=base_pose,
         )
+        self.validation_robot = None
+        if config.validation_xml:
+            vmodel = self.load_planning_model(self.resolve_xml(config.validation_xml))
+            vfixed, vbase = self.standing_pose(vmodel, config)
+            self.validation_robot = G1Up(
+                model=vmodel, visualize=False, fixed_qpos=vfixed, base_pose=vbase
+            )
         self.planner = make_planner(
             config.ompl_planner,
             self.robot,
@@ -152,6 +150,7 @@ class PlannerServer:
             validity_resolution=config.validity_resolution,
             log=True,
             phase_sigma_scale=config.phase_sigma_scale,
+            validation_robot=self.validation_robot,
         )
 
         self._lock = threading.Lock()
@@ -177,28 +176,23 @@ class PlannerServer:
         self.logger.info(f"Planning XML: {xml_path}")
         self.logger.info(f"OMPL planner: {config.ompl_planner}")
         self.logger.info(
-            "Reference objective: "
-            + ("enabled" if self.ref_traj is not None else "disabled")
+            "Reference objective: " + ("enabled" if self.ref_traj is not None else "disabled")
         )
         self.logger.info(f"Planning joints: {JOINT_NAMES_UP}")
-        self.logger.info(
-            f"Controller upper-body joints: {self.controller_interface.joint_names}"
-        )
+        self.logger.info(f"Controller upper-body joints: {self.controller_interface.joint_names}")
         self.logger.info(f"Plan service: {config.plan_service}")
         self.logger.info(f"Trajectory topic: {config.trajectory_topic}")
-        self.logger.info(
-            f"Default execute_immediately: {config.execute_immediately}"
-        )
+        self.logger.info(f"Default execute_immediately: {config.execute_immediately}")
 
     def close(self) -> None:
+        if getattr(self, "validation_robot", None) is not None:
+            self.validation_robot.close()
         self.robot.close()
 
     def read_start_from_state(self) -> np.ndarray:
         state = self.state_subscriber.get_msg()
         if state is None or "q" not in state:
-            self.logger.warn(
-                "No robot state available; using planning-model qpos as start"
-            )
+            self.logger.warn("No robot state available; using planning-model qpos as start")
             return self.robot.get_joint_qpos().astype(np.float32)
         return full_q_to_planning_qpos(
             np.asarray(state["q"], dtype=np.float32).reshape(-1),
@@ -217,16 +211,10 @@ class PlannerServer:
 
         start = np.asarray(start, dtype=np.float64).reshape(-1)
         goal = np.asarray(goal, dtype=np.float64).reshape(-1)
-        self.logger.info(
-            f"Planning Requested \nstart:\n {start} \ngoal:\n {goal}"
-        )
+        self.logger.info(f"Planning Requested \nstart:\n {start} \ngoal:\n {goal}")
 
-        if start.shape[0] != len(JOINT_NAMES_UP) or goal.shape[0] != len(
-            JOINT_NAMES_UP
-        ):
-            raise ValueError(
-                "Start/goal must match the 17-DoF planning joint set"
-            )
+        if start.shape[0] != len(JOINT_NAMES_UP) or goal.shape[0] != len(JOINT_NAMES_UP):
+            raise ValueError("Start/goal must match the 17-DoF planning joint set")
 
         self.logger.info(
             f"Planning with {self.planner.name} "
@@ -248,25 +236,15 @@ class PlannerServer:
 
         solution = np.asarray(solution, dtype=np.float64)
         if solution.ndim != 2 or solution.shape[1] != len(JOINT_NAMES_UP):
-            raise RuntimeError(
-                f"OMPL returned an invalid path shape: {solution.shape}"
-            )
+            raise RuntimeError(f"OMPL returned an invalid path shape: {solution.shape}")
         start_error = float(np.max(np.abs(solution[0] - start)))
         if goal_type == "right":
             goal_indices = [
-                idx
-                for idx, name in enumerate(JOINT_NAMES_UP)
-                if name not in JOINT_NAMES_LEFT
+                idx for idx, name in enumerate(JOINT_NAMES_UP) if name not in JOINT_NAMES_LEFT
             ]
         else:
             goal_indices = list(range(len(JOINT_NAMES_UP)))
-        goal_error = float(
-            np.max(
-                np.abs(
-                    solution[-1, goal_indices] - goal[goal_indices]
-                )
-            )
-        )
+        goal_error = float(np.max(np.abs(solution[-1, goal_indices] - goal[goal_indices])))
         if (
             start_error > self.config.endpoint_tolerance
             or goal_error > self.config.endpoint_tolerance
@@ -278,9 +256,7 @@ class PlannerServer:
                 f"tolerance={self.config.endpoint_tolerance:.6f}"
             )
 
-        waypoints = resample_waypoints(
-            solution, self.config.max_joint_step
-        )
+        waypoints = resample_waypoints(solution, self.config.max_joint_step)
         self.logger.info(
             f"Plan ready in {elapsed:.3f}s: "
             f"{len(solution)} raw -> {len(waypoints)} resampled waypoints"
@@ -307,19 +283,13 @@ class PlannerServer:
             goal, start, goal_type, execute_immediately = parse_plan_request(
                 request, self.config.goal_type, self.config.execute_immediately
             )
-            waypoints, planning_time = self.plan_to_goal(
-                goal, start, goal_type
-            )
+            waypoints, planning_time = self.plan_to_goal(goal, start, goal_type)
 
             if execute_immediately:
                 self.set_active_trajectory(waypoints)
-                self.logger.info(
-                    "execute_immediately=True; streaming trajectory to control loop"
-                )
+                self.logger.info("execute_immediately=True; streaming trajectory to control loop")
             else:
-                self.logger.info(
-                    "execute_immediately=False; returning path only"
-                )
+                self.logger.info("execute_immediately=False; returning path only")
 
             return {
                 "qpos": waypoints.astype(np.float32, copy=False),
@@ -333,9 +303,7 @@ class PlannerServer:
             with self._lock:
                 self._planning = False
 
-    def publish_step(
-        self, control_publisher: ROSMsgPublisher, keep_running
-    ) -> str:
+    def publish_step(self, control_publisher: ROSMsgPublisher, keep_running) -> str:
         """
         Advance the active execution by one step.
 
@@ -384,9 +352,7 @@ class PlannerServer:
                 return self.abandon("cancelled before the start ramp")
             if self.recorder is not None:
                 self.recorder.start(qpos, self.planner.name)
-            self.publish_ramp(
-                control_publisher, home, qpos[0], keep_running, "plan start"
-            )
+            self.publish_ramp(control_publisher, home, qpos[0], keep_running, "plan start")
             with self._lock:
                 if self._active is None or self._cancel_execution:
                     return "idle"
@@ -424,9 +390,7 @@ class PlannerServer:
 
         if stage == "settle":
             # Hold the final pose until the recording has been saved, then offer ramp_down.
-            self.publish_target(
-                control_publisher, qpos[-1], time.monotonic() + publish_period
-            )
+            self.publish_target(control_publisher, qpos[-1], time.monotonic() + publish_period)
             if self.recorder is None or not self.recorder.active:
                 with self._lock:
                     if self._active is not None and not self._cancel_execution:
@@ -456,17 +420,13 @@ class PlannerServer:
 
         return self.hold_or_stop(control_publisher, home_qpos, publish_period)
 
-    def hold_or_stop(
-        self, control_publisher: ROSMsgPublisher, pose, publish_period: float
-    ) -> str:
+    def hold_or_stop(self, control_publisher: ROSMsgPublisher, pose, publish_period: float) -> str:
         """Keep the last pose commanded, or drop the trajectory if holding is disabled."""
         if not self.config.hold_final_pose or pose is None:
             with self._lock:
                 self._active = None
             return "idle"
-        self.publish_target(
-            control_publisher, np.asarray(pose), time.monotonic() + publish_period
-        )
+        self.publish_target(control_publisher, np.asarray(pose), time.monotonic() + publish_period)
         return "streaming"
 
     def abandon(self, reason: str) -> str:
@@ -504,13 +464,9 @@ class PlannerServer:
         while not answer:
             if not keep_running() or self._cancel_execution:
                 return False
-            self.publish_target(
-                control_publisher, np.asarray(hold_qpos), time.monotonic() + period
-            )
+            self.publish_target(control_publisher, np.asarray(hold_qpos), time.monotonic() + period)
             time.sleep(period)
         return bool(answer[0])
-
-        return "initial" if is_first else "streaming"
 
     def publish_target(
         self, control_publisher: ROSMsgPublisher, planning_q: np.ndarray, target_time: float
@@ -575,9 +531,7 @@ class PlannerServer:
             self.recorder.on_state(state["q"], state.get("floating_base_pose", np.zeros(7)))
 
     # Helper functions
-    def load_reference_trajectory(
-        self, config: PlannerConfig
-    ) -> Optional[np.ndarray]:
+    def load_reference_trajectory(self, config: PlannerConfig) -> Optional[np.ndarray]:
         if not config.use_reference:
             return None
         reference = load_planning_trajectory(config.reference_trajectory_path, PLANNER_DIR)
@@ -610,11 +564,19 @@ class PlannerServer:
             if name not in JOINT_NAMES_UP and name in model_joints
         }
         has_free = any(model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE for i in range(model.njnt))
-        base_pose = (np.array([0.0, 0.0, DEFAULT_BASE_HEIGHT]), np.array([1.0, 0.0, 0.0, 0.0])) if has_free else None
+        base_pose = (
+            (np.array([0.0, 0.0, DEFAULT_BASE_HEIGHT]), np.array([1.0, 0.0, 0.0, 0.0]))
+            if has_free
+            else None
+        )
         return (fixed_qpos or None), base_pose
 
     def resolve_planning_xml(self, config: PlannerConfig) -> Path:
-        xml_path = Path(config.planning_xml)
+        return self.resolve_xml(config.planning_xml)
+
+    @staticmethod
+    def resolve_xml(path_str: str) -> Path:
+        xml_path = Path(path_str)
         if not xml_path.is_absolute():
             xml_path = PLANNER_DIR / xml_path
         xml_path = xml_path.resolve()

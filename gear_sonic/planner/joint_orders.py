@@ -6,8 +6,8 @@ finger joints, so positional mapping silently misassigns the arms.
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import numpy as np
 

@@ -79,8 +79,7 @@ class BaseConfig(ArgsConfigTemplate):
     """Version of the whole body controller."""
 
     wbc_model_path: str = (
-        "policy/GR00T-WholeBodyControl-Balance.onnx,"
-        "policy/GR00T-WholeBodyControl-Walk.onnx"
+        "policy/GR00T-WholeBodyControl-Balance.onnx," "policy/GR00T-WholeBodyControl-Walk.onnx"
     )
     """Path to WBC model file (relative to decoupled_wbc/sim2mujoco/resources/robots/g1)"""
     """gear_wbc model path: policy/GR00T-WholeBodyControl-Balance.onnx,policy/GR00T-WholeBodyControl-Walk.onnx"""
@@ -200,14 +199,10 @@ class BaseConfig(ArgsConfigTemplate):
         package_path = Path(os.path.dirname(decoupled_wbc.__file__))
 
         if self.wbc_version == "gear_wbc":
-            config_path = str(
-                package_path
-                / "control/main/teleop/configs/g1_29dof_gear_wbc.yaml"
-            )
+            config_path = str(package_path / "control/main/teleop/configs/g1_29dof_gear_wbc.yaml")
         else:
             raise ValueError(
-                f"Invalid wbc_version: {self.wbc_version}, please use one of: "
-                f"gear_wbc"
+                f"Invalid wbc_version: {self.wbc_version}, please use one of: " f"gear_wbc"
             )
 
         with open(config_path) as file:
@@ -305,18 +300,30 @@ class PlannerConfig:
     planning_timeout: float = 5.0
     """Maximum time in seconds allowed for a single OMPL solve."""
 
+    validation_xml: str = ""
+    """Scene the smoothed path is validated against, relative to the planner package.
+    Empty means the planning scene.  Set it when planning_xml carries inflated
+    obstacles: the tree then keeps a margin, and the smoothed path is checked
+    against the real geometry instead of the inflated one."""
+
     phase_sigma_scale: float = 1.0
     """PhaseRRTstar sampling width, as a multiple of the arclength-derived default.
     1.0 is the shipped value; a blocked scene needs a wider tube to find a detour
     (see report/ICRA/tables.md section 6)."""
 
-    goal_type: Literal["upper_body", "bimanual", "left", "right"] = (
-        "upper_body"
-    )
+    goal_type: Literal["upper_body", "bimanual", "left", "right"] = "upper_body"
     """Which part of the goal configuration OMPL should enforce."""
 
-    smooth_path: bool = False
-    """Whether to B-spline smooth the OMPL solution path."""
+    smooth_path: bool = True
+    """Whether to smooth the OMPL solution path before resampling.
+
+    On by default: the raw polyline turns up to ~90 deg at every waypoint, which
+    the controller tracks as a series of direction reversals.  Both planners fit a
+    cubic smoothing spline (utils/trajectory_ops.smooth_valid), collision-check
+    every sample against validation_xml (or the planning scene) and blend any that
+    collides back toward the raw path; if no tolerance yields a valid curve the raw
+    path is kept and a warning is emitted.  Tables recorded before 2026-09-11 used
+    smooth_path=False."""
 
     shortcut_path: bool = False
     """Whether to shortcut the OMPL solution path before smoothing."""
@@ -508,19 +515,13 @@ class SyncSimPlaybackConfig(SyncSimDataCollectionConfig):
     def validate_args(self):
         # Validate argument combinations
         if self.use_teleop_cmd and not self.use_actions:
-            raise ValueError(
-                "--use-teleop-cmd requires --use-actions to be set"
-            )
+            raise ValueError("--use-teleop-cmd requires --use-actions to be set")
 
         # Note: using teleop cmd has playback divergence unlike using wbc goals, as TeleopPolicy has a warmup loop
         if self.use_teleop_cmd and self.use_wbc_goals:
-            raise ValueError(
-                "--use-teleop-cmd and --use-wbc-goals are mutually exclusive"
-            )
+            raise ValueError("--use-teleop-cmd and --use-wbc-goals are mutually exclusive")
 
-        if (
-            self.use_teleop_cmd or self.use_wbc_goals
-        ) and not self.use_actions:
+        if (self.use_teleop_cmd or self.use_wbc_goals) and not self.use_actions:
             raise ValueError(
                 "You are using --use-teleop-cmd or --use-wbc-goals but not --use-actions. "
                 "This will not play back actions whether via teleop or wbc goals. "
@@ -528,14 +529,10 @@ class SyncSimPlaybackConfig(SyncSimDataCollectionConfig):
             )
 
         if self.save_img_obs and not self.save_lerobot:
-            raise ValueError(
-                "--save-img-obs is only supported with --save-lerobot"
-            )
+            raise ValueError("--save-img-obs is only supported with --save-lerobot")
 
         if self.intervention and not self.save_video:
-            raise ValueError(
-                "--intervention requires --save-video to be enabled for visualization"
-            )
+            raise ValueError("--intervention requires --save-video to be enabled for visualization")
 
 
 @dataclass

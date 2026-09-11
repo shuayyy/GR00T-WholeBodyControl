@@ -1,15 +1,14 @@
-import os, sys
+import os
+import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import numpy as np
 import mujoco
+import numpy as np
 
-from decoupled_wbc.control.main.planner.simulation.robot import G1Up
-from decoupled_wbc.control.main.planner.simulation.mujoco_utils import render_mp4, sample_qpos
-from decoupled_wbc.control.main.planner.utils.ompl_planning import OMPLGeometricPlanner, SimilarityObjective
-from decoupled_wbc.control.main.planner.utils.vamp_planning import VAMPPlanner, OMPLVAMPPlanner
 from decoupled_wbc.control.main.planner.geometry.trajectory import TOPPRATrajectory
-
+from decoupled_wbc.control.main.planner.simulation.robot import G1Up
+from decoupled_wbc.control.main.planner.utils.ompl_planning import SimilarityObjective
+from decoupled_wbc.control.main.planner.utils.vamp_planning import OMPLVAMPPlanner
 
 if __name__ == "__main__":
     np.random.seed(200)
@@ -63,9 +62,7 @@ if __name__ == "__main__":
 
     vamp_robot = vamp.g1_up
     vamp_env = vamp.Environment()
-    cuboid = Cuboid(
-        (0.508 + 0.4, 0, -0.36 - 0.073), (0, 0, 0), (0.762, 0.762, 0.36)
-    )
+    cuboid = Cuboid((0.508 + 0.4, 0, -0.36 - 0.073), (0, 0, 0), (0.762, 0.762, 0.36))
     cuboid.name = "lab_scene"
     vamp_env.add_cuboid(cuboid)
     while len(start_configs) < 1000 or len(goal_configs) < 1000:

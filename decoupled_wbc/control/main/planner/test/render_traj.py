@@ -79,7 +79,10 @@ def plan_frames(
 def render(q: np.ndarray, base: np.ndarray, full_names: list[str], fps: float, out: Path) -> None:
     model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
     data = mujoco.MjData(model)
-    qadr = [model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)] for n in full_names]
+    qadr = [
+        model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)]
+        for n in full_names
+    ]
 
     cam = mujoco.MjvCamera()
     mujoco.mjv_defaultCamera(cam)
@@ -93,9 +96,31 @@ def render(q: np.ndarray, base: np.ndarray, full_names: list[str], fps: float, o
 
     renderer = mujoco.Renderer(model, height=HEIGHT, width=WIDTH)
     ffmpeg = subprocess.Popen(
-        ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
-         "-s", f"{WIDTH}x{HEIGHT}", "-r", str(int(fps)), "-i", "-", "-c:v", "libx264",
-         "-profile:v", "baseline", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)],
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            f"{WIDTH}x{HEIGHT}",
+            "-r",
+            str(int(fps)),
+            "-i",
+            "-",
+            "-c:v",
+            "libx264",
+            "-profile:v",
+            "baseline",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(out),
+        ],
         stdin=subprocess.PIPE,
     )
     try:
@@ -124,7 +149,9 @@ def main(cfg: RenderConfig) -> None:
             waypoints=plan_dense,
             joint_names=rec["planning_joint_names"],
             source_npz=np.str_(str(npz)),
-            note=np.str_("plan_qpos linearly interpolated along arc length, evenly spaced, no smoothing"),
+            note=np.str_(
+                "plan_qpos linearly interpolated along arc length, evenly spaced, no smoothing"
+            ),
         )
         q, base = plan_frames(rec, plan_dense, cfg, full_names)
     out = Path(cfg.out) if cfg.out else npz.with_name(f"{npz.stem}_{cfg.source}.mp4")
